@@ -48,3 +48,21 @@ python speckle_capture.py --config capture_config.example.yaml --output-dir ./da
 - Baslerカメラ機種によって、ノード名や設定可能値が異なる場合があります。
 - 設定できない項目は警告を表示してスキップします。
 - `reference/` 以下の既存解析プログラムは変更していません。
+
+
+## Realtime SCOS (Matlab realtimeSCOS_Base のPython再構成)
+- 追加: `realtimeSCOS.py`（エントリポイント）
+- 実装本体: `Pypylon_realtime/realtime_scos.py`
+- 設定例: `Pypylon_realtime/realtimeSCOS_config.example.yaml`
+- Matlab処理の再分析メモ: `Pypylon_realtime/MATLAB_REANALYSIS.md`
+
+### 機能
+- Dark補正 + Spatial noise補正 + 量子化ノイズ補正を含む `corrSpeckleContrast` 計算
+- `BFI = 1 / corrSpeckleContrast` と `rBFI` の算出
+- リアルタイムで Speckle 指標（Kcorr^2, 平均強度, BFI）を可視化
+- ピクセルデータは TIFF ではなく **数値配列** (`.npy`, `.npz`) で保存
+
+### 実行例
+```bash
+python realtimeSCOS.py --config Pypylon_realtime/realtimeSCOS_config.example.yaml
+```
