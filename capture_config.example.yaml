@@ -1,0 +1,26 @@
+# Basler Speckle capture config (pypylon)
+# Units:
+# - exposure_time: microseconds (camera dependent)
+# - trigger_delay: microseconds (camera dependent)
+# - acquisition_frame_rate: frames/sec
+
+output_dir: "./data/speckle_run"
+frame_count: 1000
+camera_index: 0
+timeout_ms: 5000
+
+# Requested camera parameters
+width: 1024
+height: 1024
+offset_x: 0
+offset_y: 0
+pixel_format: "Mono12"
+gain: 0.0
+exposure_time: 1000.0
+black_level: 0.0
+trigger_mode: "Off"              # e.g., Off / On
+trigger_source: "Line1"          # e.g., Software / Line1
+trigger_delay: 0.0
+enable_acquisition_frame_rate: true
+acquisition_frame_rate: 100.0
+trigger_activation: "RisingEdge" # e.g., RisingEdge / FallingEdge
