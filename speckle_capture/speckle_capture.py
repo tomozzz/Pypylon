@@ -22,6 +22,9 @@ import yaml
 from pypylon import pylon
 
 
+DROP_NOTIFICATION_INTERVAL_S = 5.0
+
+
 @dataclass
 class CaptureConfig:
     output_dir: str
@@ -214,6 +217,10 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
         cam_timestamp_us: list[float] = []
         host_elapsed_ms: list[float] = []
 
+        dropped_total = 0
+        dropped_since_last_notice = 0
+        next_drop_notice_at_s = DROP_NOTIFICATION_INTERVAL_S
+
         while camera.IsGrabbing():
             if should_stop_capture(cfg, capture_start_monotonic_s, len(frames)):
                 break
@@ -222,10 +229,8 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
             try:
                 if not result.GrabSucceeded():
                     # Dropped/failed frame: do not append timestamps or frame.
-                    print(
-                        f"[WARN] Grab failed. code={result.GetErrorCode()}, "
-                        f"msg={result.GetErrorDescription()}"
-                    )
+                    dropped_total += 1
+                    dropped_since_last_notice += 1
                     continue
 
                 frame = result.Array.copy()
@@ -253,6 +258,23 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
                         cam_timestamp_us.append(float(tick_val))
             finally:
                 result.Release()
+
+            elapsed_s = time.perf_counter() - capture_start_monotonic_s
+            if elapsed_s >= next_drop_notice_at_s:
+                if dropped_since_last_notice > 0:
+                    print(
+                        "[WARN] Dropped/failed frames in last "
+                        f"{DROP_NOTIFICATION_INTERVAL_S:.0f}s: {dropped_since_last_notice} "
+                        f"(total={dropped_total})"
+                    )
+                    dropped_since_last_notice = 0
+                next_drop_notice_at_s += DROP_NOTIFICATION_INTERVAL_S
+
+        if dropped_since_last_notice > 0:
+            print(
+                "[WARN] Dropped/failed frames since last notice: "
+                f"{dropped_since_last_notice} (total={dropped_total})"
+            )
 
         if not frames:
             raise RuntimeError("No frames captured.")

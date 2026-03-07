@@ -17,6 +17,7 @@ except Exception:  # pragma: no cover
 
 from pypylon import pylon
 
+from .actual_gain import estimate_actual_gain_du_per_e
 from .image_stats import box_mean, erode_valid_mask, local_std
 
 
@@ -47,7 +48,8 @@ class RealtimeSCOSConfig:
     window_size: int = 9
     show_every_n_frames: int = 50
     frame_rate_hz: float = 20.0
-    actual_gain_du_per_e: float = 0.25
+    nbits: int = 12
+    actual_gain_du_per_e: float | None = None
     interactive_roi: bool = False
     roi_center_xy: list[float] | None = None
     roi_radius: float | None = None
@@ -87,6 +89,50 @@ def apply_camera(camera: pylon.InstantCamera, cfg: CameraConfig) -> None:
     _set_feature(camera, "AcquisitionFrameRate", cfg.acquisition_frame_rate)
     _set_feature(camera, "TriggerSource", cfg.trigger_source)
     _set_feature(camera, "TriggerMode", cfg.trigger_mode)
+
+
+
+
+def _camera_identity(camera: pylon.InstantCamera) -> tuple[str | None, str | None]:
+    serial = None
+    model = None
+    try:
+        dev = camera.GetDeviceInfo()
+        serial = dev.GetSerialNumber() or None
+        model = dev.GetModelName() or None
+    except Exception:
+        pass
+    return serial, model
+
+
+def resolve_actual_gain_du_per_e(cfg: RealtimeSCOSConfig, camera: pylon.InstantCamera) -> tuple[float, dict[str, str | float | int | None]]:
+    if cfg.actual_gain_du_per_e is not None:
+        return float(cfg.actual_gain_du_per_e), {
+            "source": "config_manual",
+            "serial_number": None,
+            "model_name": None,
+            "nbits": cfg.nbits,
+            "gain_db": cfg.camera.gain,
+        }
+
+    serial, model = _camera_identity(camera)
+    actual_gain, source = estimate_actual_gain_du_per_e(
+        gain_db=cfg.camera.gain,
+        nbits=cfg.nbits,
+        serial_number=serial,
+        model_name=model,
+    )
+    print(
+        "[INFO] actual_gain_du_per_e auto-estimated: "
+        f"{actual_gain:.6f} (source={source}, serial={serial}, model={model}, nbits={cfg.nbits}, gain_db={cfg.camera.gain})"
+    )
+    return actual_gain, {
+        "source": source,
+        "serial_number": serial,
+        "model_name": model,
+        "nbits": cfg.nbits,
+        "gain_db": cfg.camera.gain,
+    }
 
 
 def capture_n(camera: pylon.InstantCamera, n: int, timeout_ms: int) -> np.ndarray:
@@ -140,6 +186,7 @@ def process(cfg: RealtimeSCOSConfig) -> Path:
     apply_camera(cam, cfg.camera)
 
     try:
+        actual_gain_du_per_e, actual_gain_info = resolve_actual_gain_du_per_e(cfg, cam)
         dark_frames = capture_n(cam, cfg.dark_frame_count, cfg.camera.timeout_ms).astype(np.float64)
         dark_mean = dark_frames.mean(axis=0) - cfg.camera.black_level
         dark_var = dark_frames.var(axis=0)
@@ -184,7 +231,7 @@ def process(cfg: RealtimeSCOSConfig) -> Path:
             mean_i[k] = im[mask_idx].mean()
             raw_k2[k] = np.mean(std2_m / fit2_m)
             corr_k2[k] = np.mean(
-                (std2_m - cfg.actual_gain_du_per_e * fit_m - sp_var[mask_idx] - (1.0 / 12.0) - dark_var_window[mask_idx]) / fit2_m
+                (std2_m - actual_gain_du_per_e * fit_m - sp_var[mask_idx] - (1.0 / 12.0) - dark_var_window[mask_idx]) / fit2_m
             )
 
             if k == 0 or (k + 1) % cfg.show_every_n_frames == 0:
@@ -224,6 +271,8 @@ def process(cfg: RealtimeSCOSConfig) -> Path:
 
         meta = {
             "config": asdict(cfg),
+            "actual_gain_du_per_e_used": actual_gain_du_per_e,
+            "actual_gain_estimation": actual_gain_info,
             "captured_at_unix": time.time(),
             "frame_shape": list(all_frames.shape[1:]),
             "frame_count": int(n),
