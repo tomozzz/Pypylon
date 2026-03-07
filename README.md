@@ -3,12 +3,13 @@
 Baslerカメラを `pypylon` で制御し、Speckle撮影データを**数値配列として保存**するためのスクリプトを追加しました。
 
 ## 追加ファイル
-- `speckle_capture.py`: 撮像本体
-- `capture_config.example.yaml`: 一括設定用コンフィグ例
+- `speckle_capture/speckle_capture.py`: 撮像本体
+- `speckle_capture/capture_config.example.yaml`: 一括設定用コンフィグ例
 
 ## 主な機能
 - 画像を `frames.npy` (NumPy配列) で保存
-- 撮像開始から各フレーム取得までの経過時間を `timestamps_ms.npy` (ms) で保存
+- Baslerカメラ内部タイムスタンプを `timestamps_camera_ticks.npy` / `timestamps_camera_us.npy` として保存
+- ホスト基準の経過時間も `timestamps_host_elapsed_ms.npy` (ms) で保存
 - `metadata.json` に実行時設定と保存情報を保存
 - 保存先フォルダを config または CLI `--output-dir` で指定可能
 - 以下パラメータの設定対応
@@ -31,17 +32,19 @@ pip install pypylon numpy pyyaml
 
 ## 実行例
 ```bash
-python speckle_capture.py --config capture_config.example.yaml
+python speckle_capture/speckle_capture.py --config speckle_capture/capture_config.example.yaml
 ```
 
 保存先を実行時に上書きする場合:
 ```bash
-python speckle_capture.py --config capture_config.example.yaml --output-dir ./data/run_001
+python speckle_capture/speckle_capture.py --config speckle_capture/capture_config.example.yaml --output-dir ./data/run_001
 ```
 
 ## 出力ファイル
 - `frames.npy`: shape = `(N, H, W)`
-- `timestamps_ms.npy`: shape = `(N,)`
+- `timestamps_camera_ticks.npy`: shape = `(N,)`
+- `timestamps_camera_us.npy`: shape = `(N,)`
+- `timestamps_host_elapsed_ms.npy`: shape = `(N,)`
 - `metadata.json`
 
 ## 注意
