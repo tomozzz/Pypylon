@@ -1,34 +1,31 @@
 # Pypylon
 
-Baslerカメラを `pypylon` で制御し、Speckle撮像データを **数値配列** として保存・解析するためのリポジトリです。  
-現在のメインプログラムは、以下の2本です。
+Baslerカメラを `pypylon` で制御し、Speckle撮影データを**数値配列として保存**するためのスクリプトを追加しました。
 
-- **Speckle Capture**: 撮像と時刻保存に特化した記録用スクリプト
-- **Realtime SCOS**: 撮像しながら SCOS 指標（Kcorr² / BFI / rBFI）を計算・可視化する解析スクリプト
+## 追加ファイル
+- `speckle_capture/speckle_capture.py`: 撮像本体
+- `speckle_capture/capture_config.example.yaml`: 一括設定用コンフィグ例
 
----
+## 主な機能
+- 画像を `frames.npy` (NumPy配列) で保存
+- Baslerカメラ内部タイムスタンプを `timestamps_camera_ticks.npy` / `timestamps_camera_us.npy` として保存
+- ホスト基準の経過時間も `timestamps_host_elapsed_ms.npy` (ms) で保存
+- `metadata.json` に実行時設定と保存情報を保存
+- 保存先フォルダを config または CLI `--output-dir` で指定可能
+- 以下パラメータの設定対応
+  - Width, Height, OffsetX, OffsetY
+  - Pixel Format
+  - Gain
+  - Exposure Time
+  - Black Level
+  - Trigger Mode
+  - Trigger Source
+  - Trigger Delay
+  - Enable Acquisition Frame Rate
+  - Acquisition Frame Rate
+  - Trigger Activation
 
-## 1. Speckle Capture（記録用）
-
-### 対象ファイル
-- 実行スクリプト: `speckle_capture/speckle_capture.py`
-- 設定ファイル例: `speckle_capture/capture_config.example.yaml`
-
-### できること
-- フレームを `frames.npy`（`(N, H, W)`）として保存
-- カメラ内部タイムスタンプを保存
-  - `timestamps_camera_ticks.npy`（カメラの生tick）
-  - `timestamps_camera_us.npy`（換算できる場合はマイクロ秒）
-- ホストPC基準の経過時間も保存
-  - `timestamps_host_elapsed_ms.npy`（ms）
-- `metadata.json` に実行設定・取得情報を保存
-- 取得停止条件を設定可能
-  - `frame_count`: 取得フレーム数で停止
-  - `measurement_duration_s`: 計測時間（秒）で停止
-  - 両方を設定した場合は、先に条件を満たした時点で停止
-- `TriggerMode` / `TriggerSource` 設定により、`Line1` 入力トリガ撮像にも対応
-
-### セットアップ
+## セットアップ
 ```bash
 pip install pypylon numpy pyyaml
 ```
