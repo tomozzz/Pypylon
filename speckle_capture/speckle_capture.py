@@ -229,7 +229,7 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
         tick_frequency_hz = get_timestamp_tick_frequency_hz(camera)
 
         # Start acquisition now: measurement starts at this line.
-        camera.StartGrabbing(pylon.GrabStrategy_OneByOne, pylon.GrabLoop_ProvidedByInstantCamera)
+        camera.StartGrabbing(pylon.GrabStrategy_OneByOne, pylon.GrabLoop_ProvidedByUser)
         capture_start_monotonic_s = time.perf_counter()
         capture_start_unix_s = time.time()
 
