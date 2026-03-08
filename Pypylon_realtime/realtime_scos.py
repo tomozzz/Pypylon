@@ -276,10 +276,13 @@ def process(cfg: RealtimeSCOSConfig) -> Path:
             rbfi=rbfi,
         )
 
+        serial_rt, model_rt = _camera_identity(cam)
         meta = {
             "config": asdict(cfg),
             "actual_gain_du_per_e_used": actual_gain_du_per_e,
             "actual_gain_estimation": actual_gain_info,
+            "camera_serial_number": serial_rt,
+            "camera_model": model_rt,
             "captured_at_unix": time.time(),
             "frame_shape": list(all_frames.shape[1:]),
             "frame_count": int(n),
