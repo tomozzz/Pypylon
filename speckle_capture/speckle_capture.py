@@ -39,9 +39,6 @@ def _is_readable(node: object) -> bool:
         return False
 
 
-DROP_NOTIFICATION_INTERVAL_S = 5.0
-
-
 @dataclass
 class CaptureConfig:
     output_dir: str
@@ -83,11 +80,18 @@ def load_config(path: Path) -> CaptureConfig:
 
 
 
+def _get_node_safe(camera: pylon.InstantCamera, name: str) -> object | None:
+    try:
+        return camera.GetNodeMap().GetNode(name)
+    except Exception:
+        return None
+
+
 def set_feature(camera: pylon.InstantCamera, name: str, value: Any) -> None:
     if value is None:
         return
 
-    node = camera.GetNodeMap().GetNode(name)
+    node = _get_node_safe(camera, name)
     if node is None:
         print(f"[WARN] Feature not found: {name}")
         return
@@ -105,7 +109,7 @@ def set_feature(camera: pylon.InstantCamera, name: str, value: Any) -> None:
 
 
 def try_execute_command(camera: pylon.InstantCamera, name: str) -> bool:
-    node = camera.GetNodeMap().GetNode(name)
+    node = _get_node_safe(camera, name)
     if node is None or not _is_writable(node):
         return False
     try:
@@ -122,8 +126,8 @@ def enable_timestamp_chunk(camera: pylon.InstantCamera) -> bool:
         set_feature(camera, "ChunkSelector", "Timestamp")
         set_feature(camera, "ChunkEnable", True)
 
-        chunk_enabled = camera.GetNodeMap().GetNode("ChunkEnable")
-        chunk_mode = camera.GetNodeMap().GetNode("ChunkModeActive")
+        chunk_enabled = _get_node_safe(camera, "ChunkEnable")
+        chunk_mode = _get_node_safe(camera, "ChunkModeActive")
         if chunk_enabled is None or chunk_mode is None:
             return False
         return True
@@ -141,7 +145,7 @@ def get_timestamp_tick_frequency_hz(camera: pylon.InstantCamera) -> float | None
         "TimestampTickFrequency",
     ]
     for name in candidates:
-        node = camera.GetNodeMap().GetNode(name)
+        node = _get_node_safe(camera, name)
         if node is None or not _is_readable(node):
             continue
         try:
