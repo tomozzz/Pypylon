@@ -39,6 +39,9 @@ def _is_readable(node: object) -> bool:
         return False
 
 
+DROP_NOTIFICATION_INTERVAL_S = 5.0
+
+
 @dataclass
 class CaptureConfig:
     output_dir: str

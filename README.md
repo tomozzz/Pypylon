@@ -10,19 +10,15 @@ Baslerカメラを `pypylon` で制御し、
 pip install pypylon numpy pyyaml matplotlib
 ```
 
-Windows環境で `python` が `WindowsApps\python.exe` を指して壊れている場合は、
-`py -3 -m pip install pypylon numpy pyyaml matplotlib` を使ってください。
-
 ---
 
 ## 1) Speckle撮像（`speckle_capture/speckle_capture.py`）
 
 ### 実行
 ```bash
-py -3 speckle_capture/speckle_capture.py \
+python speckle_capture/speckle_capture.py \
   --config speckle_capture/capture_config.example.yaml
 ```
-※ `python` コマンドが正常な環境では、`python ...` でも実行できます。
 
 ### プログラムの流れ
 1. 設定ファイルを読み込む。  
@@ -71,20 +67,18 @@ py -3 speckle_capture/speckle_capture.py \
 
 ### 実行
 ```bash
-py -3 realtimeSCOS.py \
+python realtimeSCOS.py \
   --config Pypylon_realtime/realtimeSCOS_config.example.yaml
 ```
-※ `python` コマンドが正常な環境では、`python ...` でも実行できます。
 
 ### プログラムの流れ
 1. 設定ファイルを読み込む。  
 2. カメラ接続・設定適用。  
-3. `actual_gain_du_per_e` が `null` の場合は、camera serial/model + `nbits` + gain から自動算出。  
-4. `dark_frame_count` 枚を取得して `dark_mean`, `dark_var` を作成。  
-5. `spatial_frame_count` 枚を取得して空間ノイズ項（`spatial_var`）を作成。  
-6. ROIを決定（`interactive_roi` か `roi_center_xy` + `roi_radius`）。  
-7. 本計測フレームを取得し、各フレームで `corrSpeckleContrast` / `BFI` を計算。  
-8. 時系列をリアルタイム描画し、最後に `.npy/.npz` と `metadata.json` を保存。  
+3. `dark_frame_count` 枚を取得して `dark_mean`, `dark_var` を作成。  
+4. `spatial_frame_count` 枚を取得して空間ノイズ項（`spatial_var`）を作成。  
+5. ROIを決定（`interactive_roi` か `roi_center_xy` + `roi_radius`）。  
+6. 本計測フレームを取得し、各フレームで `corrSpeckleContrast` / `BFI` を計算。  
+7. 時系列をリアルタイム描画し、最後に `.npy/.npz` と `metadata.json` を保存。  
 
 ### パラメータ（`realtimeSCOS_config.example.yaml`）
 
@@ -93,8 +87,7 @@ py -3 realtimeSCOS.py \
 - `frame_count`: 本計測フレーム数
 - `dark_frame_count`, `spatial_frame_count`: 補正用フレーム数
 - `frame_rate_hz`: 時系列軸の基準FPS
-- `nbits`: 画像の有効ビット数（例: Mono12なら通常12）
-- `actual_gain_du_per_e`: 量子化/ショットノイズ補正に使うゲイン係数（`null`なら自動算出）
+- `actual_gain_du_per_e`: 量子化/ショットノイズ補正に使うゲイン係数
 - `camera.exposure_time`, `camera.gain`: 信号レベル調整
 
 #### 各項目の意味
@@ -105,8 +98,7 @@ py -3 realtimeSCOS.py \
 - `window_size`: 局所統計（平均/分散）の計算窓サイズ。
 - `show_every_n_frames`: 何フレームごとにプロット更新するか。
 - `frame_rate_hz`: 時間軸生成に使うFPS。
-- `nbits`: DU変換に使うビット深度。
-- `actual_gain_du_per_e`: DU/e⁻ 換算係数。`null`なら camera serial/model + `nbits` + `camera.gain` から自動算出（serial校正は Matlab `GetActualGain` に合わせた gain条件分岐、条件外は modelベース計算へフォールバック）。
+- `actual_gain_du_per_e`: DU/e⁻ 換算係数。
 - `interactive_roi`: GUIクリックでROIを決めるか。
 - `roi_center_xy`, `roi_radius`: 円形ROIの中心・半径。
 - `camera.*`: カメラ設定（`camera_index`, `timeout_ms`, `pixel_format`, `width/height`, `exposure_time`, `gain`, `black_level`, トリガ関連, フレームレート関連）。
