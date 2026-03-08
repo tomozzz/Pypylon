@@ -25,7 +25,7 @@ pixel_format: "Mono12"
 gain: 0.0
 exposure_time: 1000.0
 black_level: 0.0
-trigger_mode: "On"               # Off / On
+trigger_mode: "Off"              # Off / On
 trigger_source: "Line1"          # Software / Line1 / ...
 trigger_delay: 0.0
 enable_acquisition_frame_rate: true
