@@ -179,6 +179,26 @@ def apply_camera_settings(camera: pylon.InstantCamera, cfg: CaptureConfig) -> No
 
 
 
+
+
+def get_camera_identity(camera: pylon.InstantCamera) -> dict:
+    serial_number = None
+    model_name = None
+    vendor_name = None
+    try:
+        dev = camera.GetDeviceInfo()
+        serial_number = dev.GetSerialNumber() or None
+        model_name = dev.GetModelName() or None
+        vendor_name = dev.GetVendorName() or None
+    except Exception:
+        pass
+
+    return {
+        "serial_number": serial_number,
+        "model_name": model_name,
+        "vendor_name": vendor_name,
+    }
+
 def should_stop_capture(
     cfg: CaptureConfig,
     capture_start_monotonic_s: float,
@@ -219,6 +239,7 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
 
     try:
         apply_camera_settings(camera, cfg)
+        camera_identity = get_camera_identity(camera)
         chunk_timestamp_enabled = enable_timestamp_chunk(camera)
 
         # Reset camera internal timestamp counter if supported, then start immediately.
@@ -320,6 +341,10 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
             "timeout_ms": cfg.timeout_ms,
             "capture_start_unix_s": capture_start_unix_s,
             "capture_elapsed_s": float(time.perf_counter() - capture_start_monotonic_s),
+            "camera_identity": camera_identity,
+            "camera_serial_number": camera_identity.get("serial_number"),
+            "camera_model": camera_identity.get("model_name"),
+            "camera_vendor": camera_identity.get("vendor_name"),
             "timestamp": {
                 "source": "camera_chunk_timestamp" if chunk_timestamp_enabled else "host_perf_counter_fallback",
                 "camera_timestamp_reset_done": timestamp_reset_done,

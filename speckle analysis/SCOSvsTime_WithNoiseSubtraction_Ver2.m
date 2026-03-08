@@ -27,7 +27,8 @@ function  [ timeVec, rawSpeckleContrast , corrSpeckleContrast, meanVec , info] =
 if nargin < 4
     plotFlag = true;
 end
-addpath('.\baseFunc')
+scriptDir = fileparts(mfilename('fullpath'));
+addpath(fullfile(scriptDir,'baseFunc'))
 %% Constants
 timePeriodForP2P = 2; % [s]
 
@@ -42,17 +43,9 @@ if nargin == 0 % GUI mode
     
     [recName] = uigetdir(fileparts(lastF.recName));
     if recName == 0; return; end % if 'Cancel' was pressed
-    if numel(dir([recName, '\*.avi' ])) > 1 
-        [recordRawName, recordDir] = uigetfile([recName '\*.avi']);
-        if recordRawName == 0; return; end % if 'Cancel' was pressed
-        recName = fullfile(recordDir, recordRawName);
-    elseif ( numel(dir([recName, '\*.avi' ])) + numel(dir([recName, '\*.tiff' ])) + numel(dir([recName, '\*.tif' ])) +  numel(dir([recName, '\*.mat' ])) ) < 1 
-        errordlg(['No .avi or .tiff/.tif or .mat files found in ' recName ])
-        error(['No .avi or .tiff/.tif or .mat files found in ' recName ]);
-    elseif numel(dir([recName, '\*.avi' ])) == 1 && ( numel(dir([recName, '\*.tiff' ])) + numel(dir([recName, '\*.tif' ])) ) > 1 
-        % if in folder apear both .avi and .tiff files -> assume that .avi is the recording
-        d = dir([recName, '\*.avi' ]);
-        recName = fullfile( recName , d(1).name );
+    if exist(fullfile(recName,'frames.npy'),'file') ~= 2
+        errordlg(['No frames.npy found in ' recName ])
+        error(['No frames.npy found in ' recName ]);
     end
     
     save('.\lastRec.mat','recName')
@@ -67,7 +60,7 @@ if nargin == 0 % GUI mode
     clear answer
 end
 
-isRecordFile = exist(recName,'file') == 2;
+isRecordFile = false;
 if nargin == 0  || isempty(backgroundName)
     if exist([recName , '_dark'],'dir')
         backgroundName = [recName , '_dark'];
@@ -75,11 +68,7 @@ if nargin == 0  || isempty(backgroundName)
         dir_Background = [ dir([fileparts(recName) , '\DarkIm*']) dir([fileparts(recName) , '\background*']) dir([fileparts(recName) , '\BG_*'])   ] ;
     
         if  isempty(dir_Background) || numel(dir_Background) > 1 
-            if isRecordFile
-                backgroundName = uigetfile( fileparts(recName) ,'Please Select the background');
-            else
-                backgroundName = uigetdir( fileparts(recName) ,'Please Select the background'); 
-            end
+            backgroundName = uigetdir( fileparts(recName) ,'Please Select the background');
         else
             backgroundName = fullfile(fileparts(recName),dir_Background(1).name);
         end
@@ -92,7 +81,7 @@ end
 
 %% Create Mask
 upFolders = strsplit(recName,filesep);
-rawName = strrep( strjoin(upFolders(end-2:end),'; '), '_',' ');
+rawName = strrep( strjoin(upFolders(max(1,end-2):end),'; '), '_',' ');
 
 if exist(recName,'file') == 7 % it's a folder
     recSavePrefix = [ recName filesep ];
@@ -100,7 +89,16 @@ else % it's a file
     recSavePrefix = [ recName(1:find(recName=='.',1,'last')-1) '_' ];
 end
 
-[ mean_frame ] = mean( ReadRecord(recName,20),3); 
+isNpyRecord = exist(recName,'dir') == 7 && exist(fullfile(recName,'frames.npy'),'file') == 2;
+
+if isNpyRecord
+    [mainRec, mainTimeVecFile, info, sourceFiles] = LoadNpyRecording(recName);
+    nOfFrames = size(mainRec,3);
+    mean_frame = mean(mainRec(:,:,1:min(20,nOfFrames)),3);
+    im1 = mainRec(:,:,1);
+else
+    error('SCOSvsTime_WithNoiseSubtraction_Ver2 now expects recName to be a folder containing frames.npy');
+end
 
 maskFile = [recSavePrefix 'Mask.mat'];
 if exist('maskInput','var')
@@ -151,7 +149,7 @@ if ~exist('masks','var')
         masks = {};
         channels.Centers = [];
         channels.Radii   = [];
-        meanImForMask = mean(ReadRecord(recName,20),3);
+        meanImForMask = mean(mainRec(:,:,1:min(20,nOfFrames)),3);
         addMore = true; ch = 1; figMask = [];
         while addMore
             [maskTemp , circ , figMask] = GetROI(meanImForMask,windowSize);
@@ -192,19 +190,23 @@ totMask( : , [ 1:ws2 (end-ws2+1):end ]) = false;
 
 %% Check info
 upFolders = strsplit(recName,filesep);
-shortRecName = strjoin(upFolders(end-2:end));
-
-nOfFrames = GetNumOfFrames(recName);
-info = GetRecordInfo(recName);
-im1 = ReadRecord(recName,1);
+shortRecName = strjoin(upFolders(max(1,end-2):end));
 
 if backgroundName~=0
-    info_background = GetRecordInfo(backgroundName);
+    if exist(backgroundName,'dir') == 7 && exist(fullfile(backgroundName,'frames.npy'),'file') == 2
+        [~,~,info_background] = LoadNpyRecording(backgroundName);
+    else
+        info_background = GetRecordInfo(backgroundName);
+    end
     fields = {'expT','Gain','BL'};
     for fi = 1:numel(fields)
         param = fields{fi};
-        if info_background.name.(param) ~= info.name.(param)
-            error('Background.%s=%g   Record.%s=%g',param, info_background.name.(param), param, info_background.name.(param));
+        if isfield(info_background,'name') && isfield(info_background.name,param) && ...
+                isfield(info,'name') && isfield(info.name,param) && ...
+                isnumeric(info_background.name.(param)) && isnumeric(info.name.(param)) && ...
+                ~isnan(info_background.name.(param)) && ~isnan(info.name.(param)) && ...
+                info_background.name.(param) ~= info.name.(param)
+            error('Background.%s=%g   Record.%s=%g',param, info_background.name.(param), param, info.name.(param));
         end
     end
 end
@@ -226,7 +228,18 @@ end
 
 requiredBG_nOfFrames = 400;
 if exist(backgroundName,'file') == 7 % it's a folder
-    if exist( [ backgroundName '\meanIm.mat'],'file')
+    if exist(fullfile(backgroundName,'frames.npy'),'file') == 2
+        [bgRec,~,~] = LoadNpyRecording(backgroundName);
+        nOfFramesBG = size(bgRec,3);
+        if nOfFramesBG < requiredBG_nOfFrames
+            error('Not enough frames in background file. Required : %d , Exist : %d',requiredBG_nOfFrames,nOfFramesBG);
+        end
+        background = mean(bgRec,3);
+        darkVar = std(bgRec,0,3).^2;
+        if isfield(info_background,'name') && isfield(info_background.name,'BL') && ~isnan(info_background.name.BL)
+            background = background - info_background.name.BL;
+        end
+    elseif exist( [ backgroundName '\meanIm.mat'],'file')
         bgS = load([ backgroundName '\meanIm.mat']);
         if ~isfield(bgS,'nOfFrames') 
             nOfFramesBG = GetNumOfFrames(backgroundName); 
@@ -305,17 +318,13 @@ else
     BlackLevel = info.name.BL;
 end
 
-if isRecordFile
-    smoothCoeffFile = [fileparts(recName)  '\smoothingCoefficients.mat'];
-else
-    smoothCoeffFile = [recName  '\smoothingCoefficients.mat'];
-end
+smoothCoeffFile = [recName  '\smoothingCoefficients.mat'];
 if ~exist(smoothCoeffFile,'file') 
     % TBD check if it was calculated with the same mask & window size
     disp('Calc Spatial Noise and Smoothing Coefficients');
     numFramesForSPNoise = 600;
     if nOfFrames > 1000 ;  numFramesForSPNoise=1000; end
-    spRec = ReadRecord(recName,numFramesForSPNoise) - BlackLevel;
+    spRec = mainRec(:,:,1:numFramesForSPNoise) - BlackLevel;
     spIm = mean(spRec,3) - background;
     fig_spIm = my_imagesc(spIm); title(['Image average ' num2str(numFramesForSPNoise) ' frames'] );
     savefig(fig_spIm, [recName '\spIm.fig']);
@@ -359,19 +368,12 @@ fitI_B_cut =  fitI_B(roi.y  , roi.x);
 disp(['Calculating SCOS on "' recName '" ... ']);
 disp(['Mono' num2str(nOfBits)]);
 nOfChannels = numel(masks);
-frameNames = dir([recName '\*.tiff']);
-[~,sort_ind] = sort([frameNames.datenum]);
-frameNames = frameNames(sort_ind);
+frameNames = sourceFiles.frameNames;
 % init loop vars
 [ rawSpeckleContrast , corrSpeckleContrast , meanVec] =InitNaN([nOfFrames 1],nOfChannels);
-timeVecFile = nan([nOfFrames 1]);
+timeVecFile = mainTimeVecFile;
 
-if isRecordFile
-    rec = ReadRecord(recName);
-    im1 = double(rec(:,:,1));
-else
-	im1 = double(imread([recName,filesep,frameNames(1).name])) ;
-end
+im1 = double(mainRec(:,:,1));
 
 devide_by = 1;
 if nOfBits == 12  && all(mod(im1(:),2^4) == 0)
@@ -394,13 +396,11 @@ for i=1:nOfFrames
             fprintf('\n');
         end
     end
-    if isRecordFile 
-        im_raw = double(rec(:,:,i));
-    else
-        im_raw = double(imread([recName,filesep,frameNames(i).name])) / devide_by ;               
-        im_raw = im_raw - BlackLevel;
+    im_raw = double(mainRec(:,:,i)) / devide_by;
+    im_raw = im_raw - BlackLevel;
+    if numel(timeVecFile) < i || isnan(timeVecFile(i))
+        timeVecFile(i) = i/frameRate;
     end
-    timeVecFile(i) = frameNames(i).datenum;
 
     im = im_raw - background;
     im_cut = im(roi.y,roi.x);
@@ -440,9 +440,10 @@ end
 %% Save
 stdStr = sprintf('Std%dx%d',windowSize,windowSize);
 if exist([recSavePrefix 'Local' stdStr '.mat'],'file'); delete([recSavePrefix 'Local' stdStr '.mat']); end % just for it to have the right date
-firstFrameDir = dir([recName,'\*.tiff']);
-[~,min_ind] = min([firstFrameDir.datenum]);
-startDateTime = firstFrameDir(min_ind).date;
+startDateTime = sourceFiles.startDateTime;
+if isempty(startDateTime)
+    startDateTime = datestr(now);
+end
 save([recSavePrefix 'Local' stdStr '_corr.mat'],'startDateTime','timeVec', 'corrSpeckleContrast' , 'rawSpeckleContrast', 'meanVec', 'info','nOfChannels', 'recName','windowSize','timeVecFile','frameNames');
 BFI_output = struct('timeVec',timeVec,'BFI',BFI_matrix,'meanI',meanI_matrix,'channels',channels);
 save([recSavePrefix 'BFI_output.mat'],'-struct','BFI_output');
