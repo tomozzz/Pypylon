@@ -15,7 +15,7 @@ try:
 except Exception:  # pragma: no cover
     yaml = None
 
-from pypylon import pylon
+from pypylon import genicam, pylon
 
 from .actual_gain import estimate_actual_gain_du_per_e
 from .image_stats import box_mean, erode_valid_mask, local_std
@@ -63,12 +63,19 @@ def load_config(path: Path) -> RealtimeSCOSConfig:
     return RealtimeSCOSConfig(camera=cam, **data)
 
 
+def _is_writable(node: object) -> bool:
+    try:
+        return bool(genicam.IsWritable(node))
+    except Exception:
+        return False
+
+
 def _set_feature(camera: pylon.InstantCamera, name: str, value: Any) -> None:
     if value is None:
         return
     try:
         node = camera.GetNodeMap().GetNode(name)
-        if node is None or not pylon.IsWritable(node):
+        if node is None or not _is_writable(node):
             return
         getattr(camera, name).SetValue(value)
     except Exception:

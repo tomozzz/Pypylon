@@ -19,7 +19,24 @@ from typing import Any
 
 import numpy as np
 import yaml
-from pypylon import pylon
+from pypylon import genicam, pylon
+
+
+DROP_NOTIFICATION_INTERVAL_S = 5.0
+
+
+def _is_writable(node: object) -> bool:
+    try:
+        return bool(genicam.IsWritable(node))
+    except Exception:
+        return False
+
+
+def _is_readable(node: object) -> bool:
+    try:
+        return bool(genicam.IsReadable(node))
+    except Exception:
+        return False
 
 
 DROP_NOTIFICATION_INTERVAL_S = 5.0
@@ -75,7 +92,7 @@ def set_feature(camera: pylon.InstantCamera, name: str, value: Any) -> None:
         print(f"[WARN] Feature not found: {name}")
         return
 
-    if not pylon.IsWritable(node):
+    if not _is_writable(node):
         print(f"[WARN] Feature exists but is not writable: {name}")
         return
 
@@ -89,7 +106,7 @@ def set_feature(camera: pylon.InstantCamera, name: str, value: Any) -> None:
 
 def try_execute_command(camera: pylon.InstantCamera, name: str) -> bool:
     node = camera.GetNodeMap().GetNode(name)
-    if node is None or not pylon.IsWritable(node):
+    if node is None or not _is_writable(node):
         return False
     try:
         getattr(camera, name).Execute()
@@ -125,7 +142,7 @@ def get_timestamp_tick_frequency_hz(camera: pylon.InstantCamera) -> float | None
     ]
     for name in candidates:
         node = camera.GetNodeMap().GetNode(name)
-        if node is None or not pylon.IsReadable(node):
+        if node is None or not _is_readable(node):
             continue
         try:
             return float(getattr(camera, name).GetValue())
