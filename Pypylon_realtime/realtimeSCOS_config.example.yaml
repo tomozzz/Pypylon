@@ -1,0 +1,29 @@
+output_dir: ./data/realtime_scos_run01
+frame_count: 1200
+dark_frame_count: 400
+spatial_frame_count: 400
+window_size: 9
+show_every_n_frames: 50
+frame_rate_hz: 20.0
+nbits: 12
+# null の場合は camera serial/model + nbits + gain から自動算出
+actual_gain_du_per_e: null
+interactive_roi: false
+roi_center_xy: [720, 540]
+roi_radius: 220
+
+camera:
+  camera_index: 0
+  timeout_ms: 5000
+  pixel_format: Mono12
+  width: null
+  height: null
+  offset_x: null
+  offset_y: null
+  exposure_time: 10000.0
+  gain: 16.0
+  black_level: 400.0
+  trigger_mode: Off
+  trigger_source: Line1
+  acquisition_frame_rate_enable: true
+  acquisition_frame_rate: 20.0
