@@ -5,7 +5,9 @@ spatial_frame_count: 400
 window_size: 9
 show_every_n_frames: 50
 frame_rate_hz: 20.0
-actual_gain_du_per_e: 0.25
+nbits: 12
+# null の場合は camera serial/model + nbits + gain から自動算出
+actual_gain_du_per_e: null
 interactive_roi: false
 roi_center_xy: [720, 540]
 roi_radius: 220

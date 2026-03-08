@@ -19,7 +19,24 @@ from typing import Any
 
 import numpy as np
 import yaml
-from pypylon import pylon
+from pypylon import genicam, pylon
+
+
+DROP_NOTIFICATION_INTERVAL_S = 5.0
+
+
+def _is_writable(node: object) -> bool:
+    try:
+        return bool(genicam.IsWritable(node))
+    except Exception:
+        return False
+
+
+def _is_readable(node: object) -> bool:
+    try:
+        return bool(genicam.IsReadable(node))
+    except Exception:
+        return False
 
 
 @dataclass
@@ -72,7 +89,7 @@ def set_feature(camera: pylon.InstantCamera, name: str, value: Any) -> None:
         print(f"[WARN] Feature not found: {name}")
         return
 
-    if not pylon.IsWritable(node):
+    if not _is_writable(node):
         print(f"[WARN] Feature exists but is not writable: {name}")
         return
 
@@ -86,7 +103,7 @@ def set_feature(camera: pylon.InstantCamera, name: str, value: Any) -> None:
 
 def try_execute_command(camera: pylon.InstantCamera, name: str) -> bool:
     node = camera.GetNodeMap().GetNode(name)
-    if node is None or not pylon.IsWritable(node):
+    if node is None or not _is_writable(node):
         return False
     try:
         getattr(camera, name).Execute()
@@ -122,7 +139,7 @@ def get_timestamp_tick_frequency_hz(camera: pylon.InstantCamera) -> float | None
     ]
     for name in candidates:
         node = camera.GetNodeMap().GetNode(name)
-        if node is None or not pylon.IsReadable(node):
+        if node is None or not _is_readable(node):
             continue
         try:
             return float(getattr(camera, name).GetValue())
@@ -214,6 +231,10 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
         cam_timestamp_us: list[float] = []
         host_elapsed_ms: list[float] = []
 
+        dropped_total = 0
+        dropped_since_last_notice = 0
+        next_drop_notice_at_s = DROP_NOTIFICATION_INTERVAL_S
+
         while camera.IsGrabbing():
             if should_stop_capture(cfg, capture_start_monotonic_s, len(frames)):
                 break
@@ -222,10 +243,8 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
             try:
                 if not result.GrabSucceeded():
                     # Dropped/failed frame: do not append timestamps or frame.
-                    print(
-                        f"[WARN] Grab failed. code={result.GetErrorCode()}, "
-                        f"msg={result.GetErrorDescription()}"
-                    )
+                    dropped_total += 1
+                    dropped_since_last_notice += 1
                     continue
 
                 frame = result.Array.copy()
@@ -253,6 +272,23 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
                         cam_timestamp_us.append(float(tick_val))
             finally:
                 result.Release()
+
+            elapsed_s = time.perf_counter() - capture_start_monotonic_s
+            if elapsed_s >= next_drop_notice_at_s:
+                if dropped_since_last_notice > 0:
+                    print(
+                        "[WARN] Dropped/failed frames in last "
+                        f"{DROP_NOTIFICATION_INTERVAL_S:.0f}s: {dropped_since_last_notice} "
+                        f"(total={dropped_total})"
+                    )
+                    dropped_since_last_notice = 0
+                next_drop_notice_at_s += DROP_NOTIFICATION_INTERVAL_S
+
+        if dropped_since_last_notice > 0:
+            print(
+                "[WARN] Dropped/failed frames since last notice: "
+                f"{dropped_since_last_notice} (total={dropped_total})"
+            )
 
         if not frames:
             raise RuntimeError("No frames captured.")
