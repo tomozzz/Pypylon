@@ -1,6 +1,6 @@
 # SCOSvsTime / RecordSCOSLong の再分析（Python再構成対応）
 
-このメモは `reference/SCOSvsTime_WithNoiseSubtraction_Ver2.m` と `realtimeSCOS_Base/RecordSCOSLong_Tomoya.m` の処理を、
+このメモは `speckle analysis/SCOSvsTime_WithNoiseSubtraction_Ver2.m` と `realtimeSCOS_Base/RecordSCOSLong_Tomoya.m` の処理を、
 Python版 `realtimeSCOS.py` で対応づけるための実装指針です。
 
 1. **入力・初期化**: 収録条件（Frame数、window、FR、Gain、expT、BL）を読み込む。  
