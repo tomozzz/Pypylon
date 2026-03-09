@@ -63,7 +63,7 @@ py -3 speckle_capture/speckle_capture.py \
 - `timestamps_camera_ticks.npy`
 - `timestamps_camera_us.npy`
 - `timestamps_host_elapsed_ms.npy`
-- `metadata.json`
+- `metadata.json`（camera serial/model/vendor を含む）
 
 ---
 
