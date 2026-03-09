@@ -13,26 +13,11 @@ end
 
 if exist(recPath,'dir') == 7
     folderPath = recPath;
-    framesPath = fullfile(folderPath,'frames.npy');
 elseif exist(recPath,'file') == 2 && endsWith(lower(recPath),'.npy')
-    framesPath = recPath;
     folderPath = fileparts(recPath);
 else
-    error('LoadNpyRecording:InvalidPath','Input must be a recording folder or frames.npy file.');
+    error('LoadNpyRecording:InvalidPath','Input must be a recording folder or .npy file.');
 end
-
-if exist(framesPath,'file') ~= 2
-    error('LoadNpyRecording:MissingFrames','Missing file: %s',framesPath);
-end
-
-rawFrames = localReadNpy(framesPath);
-if ndims(rawFrames) ~= 3
-    error('LoadNpyRecording:BadShape','frames.npy must be a 3D array, got %dD.',ndims(rawFrames));
-end
-
-% Python capture format is (N,H,W). Convert to MATLAB (H,W,N).
-rec = double(permute(rawFrames,[2 3 1]));
-nOfFrames = size(rec,3);
 
 metadataPath = fullfile(folderPath,'metadata.json');
 metadata = struct();
@@ -40,8 +25,18 @@ if exist(metadataPath,'file') == 2
     metadata = jsondecode(fileread(metadataPath));
 end
 
+framePaths = localResolveFramePaths(recPath, folderPath, metadata);
+[rawFrames, sourceFrameNames] = localReadFrameFiles(framePaths);
+if ndims(rawFrames) ~= 3
+    error('LoadNpyRecording:BadShape','Frame array must be 3D, got %dD.',ndims(rawFrames));
+end
+
+% Python capture format is (N,H,W). Convert to MATLAB (H,W,N).
+rec = double(permute(rawFrames,[2 3 1]));
+nOfFrames = size(rec,3);
+
 sourceFiles = struct();
-sourceFiles.frameNames = arrayfun(@(k) sprintf('frames.npy#%d',k), (1:nOfFrames)', 'UniformOutput', false);
+sourceFiles.frameNames = sourceFrameNames;
 sourceFiles.startDateTime = '';
 
 timeVecFile = nan([nOfFrames 1]);
@@ -147,6 +142,69 @@ end
 info.sourceFiles = sourceFiles;
 
 end
+
+
+function framePaths = localResolveFramePaths(recPath, folderPath, metadata)
+if exist(recPath,'file') == 2 && endsWith(lower(recPath),'.npy')
+    framePaths = {recPath};
+    return;
+end
+
+framePaths = {};
+if isfield(metadata,'frame_files') && ~isempty(metadata.frame_files)
+    frameNames = metadata.frame_files;
+    if ischar(frameNames) || isstring(frameNames)
+        frameNames = cellstr(frameNames);
+    end
+    if iscell(frameNames)
+        framePaths = cellfun(@(name) fullfile(folderPath, char(name)), frameNames, 'UniformOutput', false);
+    end
+end
+
+if isempty(framePaths)
+    defaultPath = fullfile(folderPath,'frames.npy');
+    if exist(defaultPath,'file') == 2
+        framePaths = {defaultPath};
+    end
+end
+
+if isempty(framePaths)
+    error('LoadNpyRecording:MissingFrames','No frame .npy files were found in %s',folderPath);
+end
+
+missing = framePaths(cellfun(@(fp) exist(fp,'file') ~= 2, framePaths));
+if ~isempty(missing)
+    error('LoadNpyRecording:MissingFrames','Missing frame file: %s',missing{1});
+end
+end
+
+function [rawFrames, sourceFrameNames] = localReadFrameFiles(framePaths)
+rawFrames = [];
+sourceFrameNames = {};
+for i = 1:numel(framePaths)
+    chunk = localReadNpy(framePaths{i});
+    if ndims(chunk) ~= 3
+        error('LoadNpyRecording:BadShape','Frame file %s must be a 3D array, got %dD.',framePaths{i},ndims(chunk));
+    end
+
+    if isempty(rawFrames)
+        rawFrames = chunk;
+    else
+        if size(chunk,2) ~= size(rawFrames,2) || size(chunk,3) ~= size(rawFrames,3)
+            error('LoadNpyRecording:InconsistentShape', ...
+                'Frame file %s has mismatched image size (%d,%d) vs (%d,%d).', ...
+                framePaths{i},size(chunk,2),size(chunk,3),size(rawFrames,2),size(rawFrames,3));
+        end
+        rawFrames = cat(1, rawFrames, chunk);
+    end
+
+    [~,name,ext] = fileparts(framePaths{i});
+    chunkName = [name ext];
+    nChunkFrames = size(chunk,1);
+    sourceFrameNames = [sourceFrameNames; arrayfun(@(k) sprintf('%s#%d',chunkName,k), (1:nChunkFrames)', 'UniformOutput', false)]; %#ok<AGROW>
+end
+end
+
 
 function nBits = localInferNBits(rawFrames)
 if isa(rawFrames,'uint8')

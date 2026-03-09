@@ -64,6 +64,8 @@ class CaptureConfig:
     acquisition_frame_rate: float | None = None
     trigger_activation: str | None = None
 
+    # Optional chunked save mode. If set, frames are split into multiple files.
+    frames_per_file: int | None = None
 
 
 def load_config(path: Path) -> CaptureConfig:
@@ -223,6 +225,8 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
         raise ValueError("frame_count must be > 0 when specified")
     if cfg.measurement_duration_s is not None and cfg.measurement_duration_s <= 0:
         raise ValueError("measurement_duration_s must be > 0 when specified")
+    if cfg.frames_per_file is not None and cfg.frames_per_file <= 0:
+        raise ValueError("frames_per_file must be > 0 when specified")
 
     output_dir = Path(output_override or cfg.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -321,12 +325,45 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
         if not frames:
             raise RuntimeError("No frames captured.")
 
-        frames_arr = np.stack(frames, axis=0)
+        total_frame_bytes = sum(frame.nbytes for frame in frames)
+        frame_shape = list(frames[0].shape)
+        frame_dtype = str(frames[0].dtype)
+        frame_count_captured = len(frames)
+
+        frame_files: list[str] = []
+        if cfg.frames_per_file is None:
+            try:
+                frames_arr = np.stack(frames, axis=0)
+            except MemoryError as exc:
+                gib = total_frame_bytes / (1024**3)
+                raise RuntimeError(
+                    "Insufficient memory to combine captured frames into one array. "
+                    f"Captured frame payload is approximately {gib:.1f} GiB. "
+                    "Reduce frame_count / measurement_duration_s, lower image size, "
+                    "or save frames in smaller batches."
+                ) from exc
+            np.save(output_dir / "frames.npy", frames_arr)
+            frame_files.append("frames.npy")
+        else:
+            for start in range(0, frame_count_captured, cfg.frames_per_file):
+                chunk = frames[start : start + cfg.frames_per_file]
+                try:
+                    chunk_arr = np.stack(chunk, axis=0)
+                except MemoryError as exc:
+                    gib = sum(frame.nbytes for frame in chunk) / (1024**3)
+                    raise RuntimeError(
+                        "Insufficient memory to combine a frame chunk into one array. "
+                        f"Chunk starting at index {start} is approximately {gib:.1f} GiB. "
+                        "Reduce frames_per_file or lower image size."
+                    ) from exc
+                chunk_path = output_dir / f"frames_{start:08d}_{start + len(chunk) - 1:08d}.npy"
+                np.save(chunk_path, chunk_arr)
+                frame_files.append(chunk_path.name)
+
         cam_ticks_arr = np.asarray(cam_timestamp_ticks, dtype=np.int64)
         cam_us_arr = np.asarray(cam_timestamp_us, dtype=np.float64)
         host_elapsed_arr = np.asarray(host_elapsed_ms, dtype=np.float64)
 
-        np.save(output_dir / "frames.npy", frames_arr)
         np.save(output_dir / "timestamps_camera_ticks.npy", cam_ticks_arr)
         np.save(output_dir / "timestamps_camera_us.npy", cam_us_arr)
         np.save(output_dir / "timestamps_host_elapsed_ms.npy", host_elapsed_arr)
@@ -334,9 +371,11 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
         metadata = {
             "frame_count_requested": cfg.frame_count,
             "measurement_duration_s_requested": cfg.measurement_duration_s,
-            "frame_count_captured": int(frames_arr.shape[0]),
-            "shape": list(frames_arr.shape),
-            "dtype": str(frames_arr.dtype),
+            "frame_count_captured": frame_count_captured,
+            "shape": [frame_count_captured, *frame_shape],
+            "dtype": frame_dtype,
+            "frame_files": frame_files,
+            "frames_per_file": cfg.frames_per_file,
             "camera_index": cfg.camera_index,
             "timeout_ms": cfg.timeout_ms,
             "capture_start_unix_s": capture_start_unix_s,
