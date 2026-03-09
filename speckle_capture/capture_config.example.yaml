@@ -16,6 +16,9 @@ timeout_ms: 5000
 frame_count: null
 measurement_duration_s: 10.0
 
+# Optional: split frame output into multiple .npy files to reduce peak memory usage
+# frames_per_file: 1000
+
 # Requested camera parameters
 width: 1024
 height: 1024
