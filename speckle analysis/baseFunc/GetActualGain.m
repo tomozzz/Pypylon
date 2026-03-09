@@ -1,11 +1,17 @@
 function actualGain = GetActualGain(info)
 
 %% Check User Input
-if ~isfield(info,'cameraSN') && isfield(info.name,'CameraSN')
-    info.cameraSN = num2str(info.name.CameraSN);
+if ~isfield(info,'cameraSN')
+    if isfield(info,'camera_serial_number')
+        info.cameraSN = num2str(info.camera_serial_number);
+    elseif isfield(info.name,'camera_serial_number')
+        info.cameraSN = num2str(info.name.camera_serial_number);
+    elseif isfield(info.name,'CameraSN')
+        info.cameraSN = num2str(info.name.CameraSN);
+    end
 end
 
-if ~isfield(info,'cameraSN')
+if ~isfield(info,'cameraSN') || isempty(info.cameraSN)
     error('No cameraSN data in info file');
 end
 

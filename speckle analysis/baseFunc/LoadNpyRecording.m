@@ -111,6 +111,33 @@ if isfield(metadata,'config')
     end
 end
 
+% Keep camera serial/model in dedicated metadata-style fields.
+if isfield(metadata,'camera_serial_number') && ~isempty(metadata.camera_serial_number)
+    info.camera_serial_number = localToChar(metadata.camera_serial_number);
+elseif isfield(metadata,'camera_identity') && isstruct(metadata.camera_identity) && ...
+        isfield(metadata.camera_identity,'serial_number') && ~isempty(metadata.camera_identity.serial_number)
+    info.camera_serial_number = localToChar(metadata.camera_identity.serial_number);
+end
+
+if isfield(metadata,'camera_model') && ~isempty(metadata.camera_model)
+    info.cameraModel = localToChar(metadata.camera_model);
+elseif isfield(metadata,'camera_identity') && isstruct(metadata.camera_identity) && ...
+        isfield(metadata.camera_identity,'model_name') && ~isempty(metadata.camera_identity.model_name)
+    info.cameraModel = localToChar(metadata.camera_identity.model_name);
+elseif isfield(metadata,'model_name') && ~isempty(metadata.model_name)
+    info.cameraModel = localToChar(metadata.model_name);
+end
+
+if isfield(metadata,'actual_gain_estimation')
+    age = metadata.actual_gain_estimation;
+    if isfield(age,'gain_db') && (~isfield(info,'name') || ~isfield(info.name,'Gain') || isnan(info.name.Gain))
+        info.name.Gain = double(age.gain_db);
+    end
+    if isfield(age,'nbits') && (~isfield(info,'nBits') || isempty(info.nBits) || isnan(info.nBits))
+        info.nBits = double(age.nbits);
+    end
+end
+
 if isfield(metadata,'dtype')
     info.dtype = metadata.dtype;
 end
@@ -154,5 +181,17 @@ try
     arr = double(py.numpy.array(pyArr));
 catch err
     error('LoadNpyRecording:ReadNpyFailed','Failed to read %s via Python numpy.load: %s',filePath,err.message);
+end
+end
+
+function out = localToChar(v)
+if isnumeric(v)
+    out = num2str(v);
+elseif isstring(v)
+    out = char(v);
+elseif ischar(v)
+    out = v;
+else
+    out = char(string(v));
 end
 end
