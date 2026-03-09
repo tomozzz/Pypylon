@@ -40,25 +40,6 @@ if exist(metadataPath,'file') == 2
     metadata = jsondecode(fileread(metadataPath));
 end
 
-% Explicit camera identity mapping from capture metadata (priority order)
-if isfield(metadata,'camera_serial_number') && localHasValue(metadata.camera_serial_number)
-    infoCameraSNExplicit = localToChar(metadata.camera_serial_number);
-elseif isfield(metadata,'camera_identity') && isstruct(metadata.camera_identity) && ...
-        isfield(metadata.camera_identity,'serial_number') && localHasValue(metadata.camera_identity.serial_number)
-    infoCameraSNExplicit = localToChar(metadata.camera_identity.serial_number);
-else
-    infoCameraSNExplicit = '';
-end
-
-if isfield(metadata,'camera_model') && localHasValue(metadata.camera_model)
-    infoCameraModelExplicit = localToChar(metadata.camera_model);
-elseif isfield(metadata,'camera_identity') && isstruct(metadata.camera_identity) && ...
-        isfield(metadata.camera_identity,'model_name') && localHasValue(metadata.camera_identity.model_name)
-    infoCameraModelExplicit = localToChar(metadata.camera_identity.model_name);
-else
-    infoCameraModelExplicit = '';
-end
-
 sourceFiles = struct();
 sourceFiles.frameNames = arrayfun(@(k) sprintf('frames.npy#%d',k), (1:nOfFrames)', 'UniformOutput', false);
 sourceFiles.startDateTime = '';
@@ -105,14 +86,6 @@ info.imageSize = [size(rec,1) size(rec,2)];
 info.nBits = localInferNBits(rawFrames);
 info.name = GetParamsFromFileName(folderPath);
 
-if localHasValue(infoCameraSNExplicit)
-    info.cameraSN = infoCameraSNExplicit;
-    info.name.CameraSN = infoCameraSNExplicit;
-end
-if localHasValue(infoCameraModelExplicit)
-    info.cameraModel = infoCameraModelExplicit;
-end
-
 if isfield(metadata,'config')
     cfg = metadata.config;
     if isfield(cfg,'frame_rate_hz')
@@ -135,56 +108,6 @@ if isfield(metadata,'config')
             expT = expT/1000;
         end
         info.name.expT = expT;
-    end
-end
-
-
-% Camera identity / gain metadata (prefer explicit metadata fields)
-if isfield(metadata,'actual_gain_estimation')
-    age = metadata.actual_gain_estimation;
-    if (~isfield(info,'cameraSN') || ~localHasValue(info.cameraSN)) && ...
-            isfield(age,'serial_number') && localHasValue(age.serial_number)
-        info.cameraSN = localToChar(age.serial_number);
-    end
-    if (~isfield(info,'cameraModel') || ~localHasValue(info.cameraModel)) && ...
-            isfield(age,'model_name') && localHasValue(age.model_name)
-        info.cameraModel = localToChar(age.model_name);
-    end
-    if isfield(age,'gain_db') && (~isfield(info,'name') || ~isfield(info.name,'Gain') || isnan(info.name.Gain))
-        info.name.Gain = double(age.gain_db);
-    end
-    if isfield(age,'nbits') && (~isfield(info,'nBits') || isempty(info.nBits) || isnan(info.nBits))
-        info.nBits = double(age.nbits);
-    end
-end
-
-if ~isfield(info,'cameraSN') || ~localHasValue(info.cameraSN)
-    if isfield(metadata,'cameraSN') && localHasValue(metadata.cameraSN)
-        info.cameraSN = localToChar(metadata.cameraSN);
-    elseif isfield(metadata,'camera_serial_number') && localHasValue(metadata.camera_serial_number)
-        info.cameraSN = localToChar(metadata.camera_serial_number);
-    elseif isfield(metadata,'serial_number') && localHasValue(metadata.serial_number)
-        info.cameraSN = localToChar(metadata.serial_number);
-    elseif isfield(metadata,'camera_identity') && isstruct(metadata.camera_identity) && ...
-            isfield(metadata.camera_identity,'serial_number') && localHasValue(metadata.camera_identity.serial_number)
-        info.cameraSN = localToChar(metadata.camera_identity.serial_number);
-    end
-end
-
-if isfield(info,'cameraSN') && localHasValue(info.cameraSN)
-    info.name.CameraSN = localToChar(info.cameraSN);
-end
-
-if ~isfield(info,'cameraModel') || ~localHasValue(info.cameraModel)
-    if isfield(metadata,'cameraModel') && localHasValue(metadata.cameraModel)
-        info.cameraModel = localToChar(metadata.cameraModel);
-    elseif isfield(metadata,'camera_model') && localHasValue(metadata.camera_model)
-        info.cameraModel = localToChar(metadata.camera_model);
-    elseif isfield(metadata,'model_name') && localHasValue(metadata.model_name)
-        info.cameraModel = localToChar(metadata.model_name);
-    elseif isfield(metadata,'camera_identity') && isstruct(metadata.camera_identity) && ...
-            isfield(metadata.camera_identity,'model_name') && localHasValue(metadata.camera_identity.model_name)
-        info.cameraModel = localToChar(metadata.camera_identity.model_name);
     end
 end
 
@@ -231,50 +154,5 @@ try
     arr = double(py.numpy.array(pyArr));
 catch err
     error('LoadNpyRecording:ReadNpyFailed','Failed to read %s via Python numpy.load: %s',filePath,err.message);
-end
-end
-
-
-function out = localToChar(v)
-if isnumeric(v)
-    out = num2str(v);
-elseif isstring(v)
-    out = char(v);
-elseif ischar(v)
-    out = v;
-else
-    out = char(string(v));
-end
-end
-
-
-function tf = localHasValue(v)
-tf = false;
-if isempty(v)
-    return;
-end
-if ischar(v)
-    vv = strtrim(v);
-    tf = ~isempty(vv) && ~strcmpi(vv,'none') && ~strcmpi(vv,'null');
-    return;
-end
-if isstring(v)
-    vv = strtrim(char(v));
-    tf = ~isempty(vv) && ~strcmpi(vv,'none') && ~strcmpi(vv,'null');
-    return;
-end
-if isnumeric(v)
-    tf = any(~isnan(v(:)));
-    return;
-end
-if islogical(v)
-    tf = true;
-    return;
-end
-try
-    vv = strtrim(char(string(v)));
-    tf = ~isempty(vv) && ~strcmpi(vv,'none') && ~strcmpi(vv,'null');
-catch
-    tf = true;
 end
 end
