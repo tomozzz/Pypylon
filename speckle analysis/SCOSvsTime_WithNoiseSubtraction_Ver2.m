@@ -94,8 +94,13 @@ end
 isNpyRecord = exist(recName,'dir') == 7 && (exist(fullfile(recName,'frames.npy'),'file') == 2 || ~isempty(dir(fullfile(recName,'frames_*.npy'))));
 
 if isNpyRecord
-    [previewRec, ~, info, sourceFiles] = LoadNpyRecordingRange(recName,1,20);
+    [~, info, sourceFiles] = LoadNpyRecordingMeta(recName);
     nOfFrames = sourceFiles.totalFrames;
+    nPreview = min(20,nOfFrames);
+    previewRec = zeros([sourceFiles.imageSize nPreview]);
+    for k=1:nPreview
+        previewRec(:,:,k) = double(LoadNpyRecordingFrame(recName,k,sourceFiles));
+    end
     mean_frame = mean(previewRec,3);
     im1 = previewRec(:,:,1);
 else
@@ -196,7 +201,7 @@ shortRecName = strjoin(upFolders(max(1,end-2):end));
 
 if backgroundName~=0
     if exist(backgroundName,'dir') == 7 && (exist(fullfile(backgroundName,'frames.npy'),'file') == 2 || ~isempty(dir(fullfile(backgroundName,'frames_*.npy'))))
-        [~,~,info_background] = LoadNpyRecordingRange(backgroundName,1,1);
+        [~,info_background] = LoadNpyRecordingMeta(backgroundName);
     else
         info_background = GetRecordInfo(backgroundName);
     end
@@ -231,10 +236,14 @@ end
 requiredBG_nOfFrames = 400;
 if exist(backgroundName,'file') == 7 % it's a folder
     if exist(fullfile(backgroundName,'frames.npy'),'file') == 2 || ~isempty(dir(fullfile(backgroundName,'frames_*.npy')))
-        [bgRec,~,~,bgSourceFiles] = LoadNpyRecordingRange(backgroundName,1,requiredBG_nOfFrames);
+        [~,~,bgSourceFiles] = LoadNpyRecordingMeta(backgroundName);
         nOfFramesBG = bgSourceFiles.totalFrames;
         if nOfFramesBG < requiredBG_nOfFrames
             error('Not enough frames in background file. Required : %d , Exist : %d',requiredBG_nOfFrames,nOfFramesBG);
+        end
+        bgRec = zeros([bgSourceFiles.imageSize requiredBG_nOfFrames]);
+        for bi = 1:requiredBG_nOfFrames
+            bgRec(:,:,bi) = double(LoadNpyRecordingFrame(backgroundName,bi,bgSourceFiles));
         end
         background = mean(bgRec,3);
         darkVar = std(double(bgRec),0,3).^2;
@@ -326,8 +335,11 @@ if ~exist(smoothCoeffFile,'file')
     disp('Calc Spatial Noise and Smoothing Coefficients');
     numFramesForSPNoise = 600;
     if nOfFrames > 1000 ;  numFramesForSPNoise=1000; end
-    [spRec,~,~,~] = LoadNpyRecordingRange(recName,1,numFramesForSPNoise);
-    spRec = double(spRec) - BlackLevel;
+    spRec = zeros([sourceFiles.imageSize numFramesForSPNoise]);
+    for si = 1:numFramesForSPNoise
+        spRec(:,:,si) = double(LoadNpyRecordingFrame(recName,si,sourceFiles));
+    end
+    spRec = spRec - BlackLevel;
     spIm = mean(spRec,3) - background;
     fig_spIm = my_imagesc(spIm); title(['Image average ' num2str(numFramesForSPNoise) ' frames'] );
     savefig(fig_spIm, [recName '\spIm.fig']);
@@ -403,6 +415,41 @@ for batchStart = 1:batchSize:nOfFrames
             fprintf('%d\t',i);
             if mod(i,2000) == 0
                 fprintf('\n');
+            end
+        end
+    end
+
+    [imFrame,tFrame,frameName] = LoadNpyRecordingFrame(recName,i,sourceFiles);
+    im_raw = double(imFrame) / devide_by;
+    im_raw = im_raw - BlackLevel;
+    frameNames{i} = frameName;
+    if ~isnan(tFrame)
+        timeVecFile(i) = tFrame;
+    else
+        timeVecFile(i) = i/frameRate;
+    end
+
+    im = im_raw - background;
+    im_cut = im(roi.y,roi.x);
+    stdIm = stdfilt(im_cut,true(windowSize));
+
+    for ch = 1:nOfChannels
+        meanFrame = mean(im_cut(masks_cut{ch}));
+        fittedI = fitI_A_cut*meanFrame + fitI_B_cut ;
+        fittedISquare = fittedI.^2;
+
+        rawSpeckleContrast{ch}(i) = mean((stdIm(masks_cut{ch}).^2 ./ fittedISquare(masks_cut{ch})));
+        corrSpeckleContrast{ch}(i) = mean( ( stdIm(masks_cut{ch}).^2 - actualGain.*fittedI(masks_cut{ch})  - spVar(masks_cut{ch}) - 1/12 - darkVarPerWindow(masks_cut{ch}))./fittedISquare(masks_cut{ch}) );
+        meanVec{ch}(i) = meanFrame;
+        if i==1
+            fprintf('<I>=%.3gDU , K_raw = %.5g , Ks=%.5g , Kr=%.5g, Ksp=%.5g, Kq=%.5g, Kf=%.5g\n',meanFrame,rawSpeckleContrast{ch}(i), ...
+               mean(actualGain.*fittedI(masks_cut{ch})./fittedISquare(masks_cut{ch})),mean(darkVar(masks_cut{ch})./fittedISquare(masks_cut{ch})),...
+               mean(spVar(masks_cut{ch})./fittedISquare(masks_cut{ch})),mean(1./(12*fittedISquare(masks_cut{ch}))),corrSpeckleContrast{ch}(i));
+        end
+    end
+    clear batchRec batchTimeVec batchSourceFiles
+end
+fprintf('\n');
             end
         end
 
