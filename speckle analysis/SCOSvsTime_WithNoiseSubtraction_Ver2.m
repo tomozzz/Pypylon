@@ -246,7 +246,7 @@ if exist(backgroundName,'file') == 7 % it's a folder
             bgRec(:,:,bi) = double(LoadNpyRecordingFrame(backgroundName,bi,bgSourceFiles));
         end
         background = mean(bgRec,3);
-        darkVar = std(bgRec,0,3).^2;
+        darkVar = std(double(bgRec),0,3).^2;
         if isfield(info_background,'name') && isfield(info_background.name,'BL') && ~isnan(info_background.name.BL)
             background = background - info_background.name.BL;
         end
@@ -400,15 +400,22 @@ end
 
 start_scos = tic;
                
-for i=1:nOfFrames
-    if i == 50
-        time50frames = toc(start_scos);
-        fprintf('\n Estimated Time = %g min (%d frames)\n',round(time50frames/50*nOfFrames/60,2), nOfFrames)
-    end
-    if mod(i,200) == 0 
-        fprintf('%d\t',i);
-        if mod(i,2000) == 0
-            fprintf('\n');
+batchSize = 1;
+for batchStart = 1:batchSize:nOfFrames
+    batchCount = min(batchSize, nOfFrames - batchStart + 1);
+    [batchRec,batchTimeVec,~,batchSourceFiles] = LoadNpyRecordingRange(recName,batchStart,batchCount);
+
+    for j = 1:batchCount
+        i = batchStart + j - 1;
+        if i == 50
+            time50frames = toc(start_scos);
+            fprintf('\n Estimated Time = %g min (%d frames)\n',round(time50frames/50*nOfFrames/60,2), nOfFrames)
+        end
+        if mod(i,200) == 0 
+            fprintf('%d\t',i);
+            if mod(i,2000) == 0
+                fprintf('\n');
+            end
         end
     end
 
@@ -440,6 +447,7 @@ for i=1:nOfFrames
                mean(spVar(masks_cut{ch})./fittedISquare(masks_cut{ch})),mean(1./(12*fittedISquare(masks_cut{ch}))),corrSpeckleContrast{ch}(i));
         end
     end
+    clear batchRec batchTimeVec batchSourceFiles
 end
 fprintf('\n');
             end
