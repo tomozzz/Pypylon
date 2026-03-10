@@ -237,7 +237,7 @@ if exist(backgroundName,'file') == 7 % it's a folder
             error('Not enough frames in background file. Required : %d , Exist : %d',requiredBG_nOfFrames,nOfFramesBG);
         end
         background = mean(bgRec,3);
-        darkVar = std(bgRec,0,3).^2;
+        darkVar = std(double(bgRec),0,3).^2;
         if isfield(info_background,'name') && isfield(info_background.name,'BL') && ~isnan(info_background.name.BL)
             background = background - info_background.name.BL;
         end
@@ -295,7 +295,7 @@ elseif endsWith(backgroundName,'.mat')
         darkRec = bgS.(fields{1}); 
         bgS.recMean = mean(darkRec,3);
         background = bgS.recMean - info_background.name.BL;
-        darkVar = std(darkRec,0,3).^2;
+        darkVar = std(double(darkRec),0,3).^2;
         bgS.recVar   = darkVar;
         save(backgroundName,'-struct','bgS')
     else
@@ -388,7 +388,7 @@ end
 
 start_scos = tic;
                
-batchSize = 1000;
+batchSize = 1;
 for batchStart = 1:batchSize:nOfFrames
     batchCount = min(batchSize, nOfFrames - batchStart + 1);
     [batchRec,batchTimeVec,~,batchSourceFiles] = LoadNpyRecordingRange(recName,batchStart,batchCount);

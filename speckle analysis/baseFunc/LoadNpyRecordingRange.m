@@ -71,7 +71,14 @@ info = struct();
 info.fileType = '.npy';
 info.imageSize = frameSize;
 info.nBits = localInferNBits(rawFrames);
-info.name = GetParamsFromFileName(folderPath);
+warnState = warning('off','all');
+info.name = struct();
+try
+    info.name = GetParamsFromFileName(folderPath);
+catch
+    info.name = struct();
+end
+warning(warnState);
 
 if isfield(metadata,'config')
     cfg = metadata.config;
