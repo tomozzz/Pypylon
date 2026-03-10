@@ -169,6 +169,10 @@ if isempty(framePaths)
 end
 
 if isempty(framePaths)
+    framePaths = localListChunkFramePaths(folderPath);
+end
+
+if isempty(framePaths)
     error('LoadNpyRecording:MissingFrames','No frame .npy files were found in %s',folderPath);
 end
 
@@ -176,6 +180,18 @@ missing = framePaths(cellfun(@(fp) exist(fp,'file') ~= 2, framePaths));
 if ~isempty(missing)
     error('LoadNpyRecording:MissingFrames','Missing frame file: %s',missing{1});
 end
+end
+
+function framePaths = localListChunkFramePaths(folderPath)
+chunkFiles = dir(fullfile(folderPath,'frames_*.npy'));
+if isempty(chunkFiles)
+    framePaths = {};
+    return;
+end
+
+[~, sortIdx] = sort({chunkFiles.name});
+chunkFiles = chunkFiles(sortIdx);
+framePaths = arrayfun(@(f) fullfile(folderPath,f.name), chunkFiles, 'UniformOutput', false);
 end
 
 function [rawFrames, sourceFrameNames] = localReadFrameFiles(framePaths)

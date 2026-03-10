@@ -43,9 +43,11 @@ if nargin == 0 % GUI mode
     
     [recName] = uigetdir(fileparts(lastF.recName));
     if recName == 0; return; end % if 'Cancel' was pressed
-    if exist(fullfile(recName,'frames.npy'),'file') ~= 2
-        errordlg(['No frames.npy found in ' recName ])
-        error(['No frames.npy found in ' recName ]);
+    hasFramesNpy = exist(fullfile(recName,'frames.npy'),'file') == 2;
+    hasChunkFrames = ~isempty(dir(fullfile(recName,'frames_*.npy')));
+    if ~(hasFramesNpy || hasChunkFrames)
+        errordlg(['No frame .npy files found in ' recName ])
+        error(['No frame .npy files found in ' recName ]);
     end
     
     save('.\lastRec.mat','recName')
@@ -89,7 +91,7 @@ else % it's a file
     recSavePrefix = [ recName(1:find(recName=='.',1,'last')-1) '_' ];
 end
 
-isNpyRecord = exist(recName,'dir') == 7 && exist(fullfile(recName,'frames.npy'),'file') == 2;
+isNpyRecord = exist(recName,'dir') == 7 && (exist(fullfile(recName,'frames.npy'),'file') == 2 || ~isempty(dir(fullfile(recName,'frames_*.npy'))));
 
 if isNpyRecord
     [mainRec, mainTimeVecFile, info, sourceFiles] = LoadNpyRecording(recName);
@@ -97,7 +99,7 @@ if isNpyRecord
     mean_frame = mean(mainRec(:,:,1:min(20,nOfFrames)),3);
     im1 = mainRec(:,:,1);
 else
-    error('SCOSvsTime_WithNoiseSubtraction_Ver2 now expects recName to be a folder containing frames.npy');
+    error('SCOSvsTime_WithNoiseSubtraction_Ver2 now expects recName to be a folder containing frame .npy files');
 end
 
 maskFile = [recSavePrefix 'Mask.mat'];
@@ -193,7 +195,7 @@ upFolders = strsplit(recName,filesep);
 shortRecName = strjoin(upFolders(max(1,end-2):end));
 
 if backgroundName~=0
-    if exist(backgroundName,'dir') == 7 && exist(fullfile(backgroundName,'frames.npy'),'file') == 2
+    if exist(backgroundName,'dir') == 7 && (exist(fullfile(backgroundName,'frames.npy'),'file') == 2 || ~isempty(dir(fullfile(backgroundName,'frames_*.npy'))))
         [~,~,info_background] = LoadNpyRecording(backgroundName);
     else
         info_background = GetRecordInfo(backgroundName);
@@ -228,7 +230,7 @@ end
 
 requiredBG_nOfFrames = 400;
 if exist(backgroundName,'file') == 7 % it's a folder
-    if exist(fullfile(backgroundName,'frames.npy'),'file') == 2
+    if exist(fullfile(backgroundName,'frames.npy'),'file') == 2 || ~isempty(dir(fullfile(backgroundName,'frames_*.npy')))
         [bgRec,~,~] = LoadNpyRecording(backgroundName);
         nOfFramesBG = size(bgRec,3);
         if nOfFramesBG < requiredBG_nOfFrames
