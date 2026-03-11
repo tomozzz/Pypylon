@@ -29,6 +29,7 @@ if nargin < 4
 end
 scriptDir = fileparts(mfilename('fullpath'));
 addpath(fullfile(scriptDir,'baseFunc'))
+
 %% Constants
 timePeriodForP2P = 2; % [s]
 
@@ -83,7 +84,7 @@ end
 
 %% Create Mask
 upFolders = strsplit(recName,filesep);
-rawName = strrep( strjoin(upFolders(max(1,end-2):end),'; '), '_',' ');
+rawName = strrep( strjoin(upFolders(max(1,end-2):end),'; '), '_',' '); %#ok<NASGU>
 
 if exist(recName,'file') == 7 % it's a folder
     recSavePrefix = [ recName filesep ];
@@ -197,7 +198,7 @@ totMask( : , [ 1:ws2 (end-ws2+1):end ]) = false;
 
 %% Check info
 upFolders = strsplit(recName,filesep);
-shortRecName = strjoin(upFolders(max(1,end-2):end));
+shortRecName = strjoin(upFolders(max(1,end-2):end)); %#ok<NASGU>
 
 if backgroundName~=0
     if exist(backgroundName,'dir') == 7 && (exist(fullfile(backgroundName,'frames.npy'),'file') == 2 || ~isempty(dir(fullfile(backgroundName,'frames_*.npy'))))
@@ -226,6 +227,7 @@ else
     end
     frameRate = info.name.FR; 
 end
+
 %% Get Background and Background Noise
 start_calib_time = tic;
 disp('Load Background');
@@ -257,7 +259,7 @@ if exist(backgroundName,'file') == 7 % it's a folder
         else
             nOfFramesBG = bgS.nOfFrames;
         end
-        if   nOfFramesBG < requiredBG_nOfFrames
+        if nOfFramesBG < requiredBG_nOfFrames
             error('Not enough frames in background file. Required : %d , Exist : %d',requiredBG_nOfFrames,nOfFramesBG);
         end
         if isfield(bgS,'recVar')
@@ -266,12 +268,12 @@ if exist(backgroundName,'file') == 7 % it's a folder
         else
             delete([ backgroundName '\meanIm.mat']);
             [ background , darkVar ] = ReadRecordVarAndMean( backgroundName );
-            background =  background - info_background.name.BL;
+            background = background - info_background.name.BL;
         end
         clear bgS
     else
         nOfFramesBG = GetNumOfFrames(backgroundName);
-        if  nOfFramesBG < requiredBG_nOfFrames
+        if nOfFramesBG < requiredBG_nOfFrames
             error('Not enough frames in background file. Required : %d , Exist : %d',requiredBG_nOfFrames,nOfFramesBG);
         end
         [ background , darkVar ] = ReadRecordVarAndMean( backgroundName );
@@ -313,11 +315,12 @@ elseif endsWith(backgroundName,'.mat')
     clear bgS
 end
 
-darkVarPerWindow = imboxfilt(darkVar,windowSize) ;
+darkVarPerWindow = imboxfilt(darkVar,windowSize);
 
 if ~isequal(size(background),size(im1))
     error('The background should be the same picture size as the record. Record size is [%d,%d], but background size is [%d,%d]',size(im1,1), size(im1,2), size(background,1), size(background,1));
 end
+
 %% Get G[DU/e]
 nOfBits = info.nBits;
 actualGain = GetActualGain(info);
@@ -334,7 +337,9 @@ if ~exist(smoothCoeffFile,'file')
     % TBD check if it was calculated with the same mask & window size
     disp('Calc Spatial Noise and Smoothing Coefficients');
     numFramesForSPNoise = 600;
-    if nOfFrames > 1000 ;  numFramesForSPNoise=1000; end
+    if nOfFrames > 1000
+        numFramesForSPNoise=1000;
+    end
     spRec = zeros([sourceFiles.imageSize numFramesForSPNoise]);
     for si = 1:numFramesForSPNoise
         spRec(:,:,si) = double(LoadNpyRecordingFrame(recName,si,sourceFiles));
@@ -357,7 +362,7 @@ disp('Calibration Time')
 toc(start_calib_time)
 
 %% Decrease Image Size
-[y,x] = find(totMask) ;
+[y,x] = find(totMask);
 roi_lims  = [ min(y)-windowSize  , max(y)+windowSize
               min(x)-windowSize  , max(x)+windowSize ];
 
@@ -378,14 +383,15 @@ end
    
 fitI_A_cut =  fitI_A(roi.y  , roi.x);
 fitI_B_cut =  fitI_B(roi.y  , roi.x);
-% bpMap_cut = bpMap(roi.y  , roi.x);
+
 %% Calc Specle Contrast
 disp(['Calculating SCOS on "' recName '" ... ']);
 disp(['Mono' num2str(nOfBits)]);
 nOfChannels = numel(masks);
 frameNames = cell(nOfFrames,1);
+
 % init loop vars
-[ rawSpeckleContrast , corrSpeckleContrast , meanVec] =InitNaN([nOfFrames 1],nOfChannels);
+[ rawSpeckleContrast , corrSpeckleContrast , meanVec] = InitNaN([nOfFrames 1],nOfChannels);
 timeVecFile = nan([nOfFrames 1]);
 
 im1 = double(im1);
@@ -397,9 +403,8 @@ elseif nOfBits == 10  && all(mod(im1(:),2^6) == 0)
     devide_by = 2^6;
 end
 
-
 start_scos = tic;
-               
+
 batchSize = 1;
 for batchStart = 1:batchSize:nOfFrames
     batchCount = min(batchSize, nOfFrames - batchStart + 1);
@@ -407,6 +412,7 @@ for batchStart = 1:batchSize:nOfFrames
 
     for j = 1:batchCount
         i = batchStart + j - 1;
+
         if i == 50
             time50frames = toc(start_scos);
             fprintf('\n Estimated Time = %g min (%d frames)\n',round(time50frames/50*nOfFrames/60,2), nOfFrames)
@@ -417,45 +423,11 @@ for batchStart = 1:batchSize:nOfFrames
                 fprintf('\n');
             end
         end
-    end
-
-    [imFrame,tFrame,frameName] = LoadNpyRecordingFrame(recName,i,sourceFiles);
-    im_raw = double(imFrame) / devide_by;
-    im_raw = im_raw - BlackLevel;
-    frameNames{i} = frameName;
-    if ~isnan(tFrame)
-        timeVecFile(i) = tFrame;
-    else
-        timeVecFile(i) = i/frameRate;
-    end
-
-    im = im_raw - background;
-    im_cut = im(roi.y,roi.x);
-    stdIm = stdfilt(im_cut,true(windowSize));
-
-    for ch = 1:nOfChannels
-        meanFrame = mean(im_cut(masks_cut{ch}));
-        fittedI = fitI_A_cut*meanFrame + fitI_B_cut ;
-        fittedISquare = fittedI.^2;
-
-        rawSpeckleContrast{ch}(i) = mean((stdIm(masks_cut{ch}).^2 ./ fittedISquare(masks_cut{ch})));
-        corrSpeckleContrast{ch}(i) = mean( ( stdIm(masks_cut{ch}).^2 - actualGain.*fittedI(masks_cut{ch})  - spVar(masks_cut{ch}) - 1/12 - darkVarPerWindow(masks_cut{ch}))./fittedISquare(masks_cut{ch}) );
-        meanVec{ch}(i) = meanFrame;
-        if i==1
-            fprintf('<I>=%.3gDU , K_raw = %.5g , Ks=%.5g , Kr=%.5g, Ksp=%.5g, Kq=%.5g, Kf=%.5g\n',meanFrame,rawSpeckleContrast{ch}(i), ...
-               mean(actualGain.*fittedI(masks_cut{ch})./fittedISquare(masks_cut{ch})),mean(darkVar(masks_cut{ch})./fittedISquare(masks_cut{ch})),...
-               mean(spVar(masks_cut{ch})./fittedISquare(masks_cut{ch})),mean(1./(12*fittedISquare(masks_cut{ch}))),corrSpeckleContrast{ch}(i));
-        end
-    end
-    clear batchRec batchTimeVec batchSourceFiles
-end
-fprintf('\n');
-            end
-        end
 
         im_raw = double(batchRec(:,:,j)) / devide_by;
         im_raw = im_raw - BlackLevel;
         frameNames{i} = batchSourceFiles.frameNames{j};
+
         if numel(batchTimeVec) >= j && ~isnan(batchTimeVec(j))
             timeVecFile(i) = batchTimeVec(j);
         else
@@ -468,25 +440,33 @@ fprintf('\n');
 
         for ch = 1:nOfChannels
             meanFrame = mean(im_cut(masks_cut{ch}));
-            fittedI = fitI_A_cut*meanFrame + fitI_B_cut ;
+            fittedI = fitI_A_cut*meanFrame + fitI_B_cut;
             fittedISquare = fittedI.^2;
 
             rawSpeckleContrast{ch}(i) = mean((stdIm(masks_cut{ch}).^2 ./ fittedISquare(masks_cut{ch})));
-            corrSpeckleContrast{ch}(i) = mean( ( stdIm(masks_cut{ch}).^2 - actualGain.*fittedI(masks_cut{ch})  - spVar(masks_cut{ch}) - 1/12 - darkVarPerWindow(masks_cut{ch}))./fittedISquare(masks_cut{ch}) );
+            corrSpeckleContrast{ch}(i) = mean((stdIm(masks_cut{ch}).^2 - actualGain.*fittedI(masks_cut{ch}) - spVar(masks_cut{ch}) - 1/12 - darkVarPerWindow(masks_cut{ch})) ./ fittedISquare(masks_cut{ch}));
             meanVec{ch}(i) = meanFrame;
+
             if i==1
-                fprintf('<I>=%.3gDU , K_raw = %.5g , Ks=%.5g , Kr=%.5g, Ksp=%.5g, Kq=%.5g, Kf=%.5g\n',meanFrame,rawSpeckleContrast{ch}(i), ...
-                   mean(actualGain.*fittedI(masks_cut{ch})./fittedISquare(masks_cut{ch})),mean(darkVar(masks_cut{ch})./fittedISquare(masks_cut{ch})),...
-                   mean(spVar(masks_cut{ch})./fittedISquare(masks_cut{ch})),mean(1./(12*fittedISquare(masks_cut{ch}))),corrSpeckleContrast{ch}(i));
+                fprintf('<I>=%.3gDU , K_raw = %.5g , Ks=%.5g , Kr=%.5g, Ksp=%.5g, Kq=%.5g, Kf=%.5g\n', ...
+                    meanFrame, rawSpeckleContrast{ch}(i), ...
+                    mean(actualGain.*fittedI(masks_cut{ch})./fittedISquare(masks_cut{ch})), ...
+                    mean(darkVar(masks_cut{ch})./fittedISquare(masks_cut{ch})), ...
+                    mean(spVar(masks_cut{ch})./fittedISquare(masks_cut{ch})), ...
+                    mean(1./(12*fittedISquare(masks_cut{ch}))), ...
+                    corrSpeckleContrast{ch}(i));
             end
         end
     end
+
     clear batchRec batchTimeVec batchSourceFiles
 end
 fprintf('\n');
+
 %% Create Time vector
-timeVec = (0:(nOfFrames-1))'*(1/frameRate) ;   % FR = FrameRate
-p2p_time = timeVec<timePeriodForP2P;
+timeVec = (0:(nOfFrames-1))'*(1/frameRate);   % FR = FrameRate
+p2p_time = timeVec<timePeriodForP2P; %#ok<NASGU>
+
 % Calculate BFI for all channels
 BFi = cell(1,nOfChannels);
 BFI_matrix = zeros(nOfFrames,nOfChannels);
@@ -496,16 +476,25 @@ for ch = 1:nOfChannels
     BFI_matrix(:,ch) = BFi{ch};
     meanI_matrix(:,ch) = meanVec{ch};
 end
+
 %% Save
 stdStr = sprintf('Std%dx%d',windowSize,windowSize);
-if exist([recSavePrefix 'Local' stdStr '.mat'],'file'); delete([recSavePrefix 'Local' stdStr '.mat']); end % just for it to have the right date
+if exist([recSavePrefix 'Local' stdStr '.mat'],'file')
+    delete([recSavePrefix 'Local' stdStr '.mat']);
+end % just for it to have the right date
+
 startDateTime = sourceFiles.startDateTime;
 if isempty(startDateTime)
     startDateTime = datestr(now);
 end
-save([recSavePrefix 'Local' stdStr '_corr.mat'],'startDateTime','timeVec', 'corrSpeckleContrast' , 'rawSpeckleContrast', 'meanVec', 'info','nOfChannels', 'recName','windowSize','timeVecFile','frameNames');
+
+save([recSavePrefix 'Local' stdStr '_corr.mat'], ...
+    'startDateTime','timeVec', 'corrSpeckleContrast' , 'rawSpeckleContrast', ...
+    'meanVec', 'info','nOfChannels', 'recName','windowSize','timeVecFile','frameNames');
+
 BFI_output = struct('timeVec',timeVec,'BFI',BFI_matrix,'meanI',meanI_matrix,'channels',channels);
 save([recSavePrefix 'BFI_output.mat'],'-struct','BFI_output');
+
 for ch = 1:nOfChannels
     singleBFI.timeVec = timeVec;
     singleBFI.BFI = BFI_matrix(:,ch);
@@ -522,6 +511,7 @@ firtsParamValue = info.name.(infoFields{1});
 if ~ischar(firtsParamValue)
     firtsParamValue = num2str(firtsParamValue);
 end
+
 if isfield(info.name,'SDS')
     titleStr =  [ infoFields{1} firtsParamValue ' SDS=' num2str(info.name.SDS)  '; exp=' num2str(info.name.expT)  'ms; Gain='  num2str(info.name.Gain) 'dB' ];
 else
@@ -533,7 +523,7 @@ if plotFlag
     fig_raw = figure('name',['SCOS Raw ' recName],'Units','Normalized','Position',[0.01,1-0.16-nOfChannels*0.15,0.9,0.05+nOfChannels*0.15]);
     for ch = 1:nOfChannels
         try
-            [raw_SNR,raw_FFT,raw_freq,raw_pulseFreq,raw_pulseBPM] = CalcSNR_Pulse(rawSpeckleContrast{ch},frameRate,false);
+            [raw_SNR,raw_FFT,raw_freq,raw_pulseFreq,raw_pulseBPM] = CalcSNR_Pulse(rawSpeckleContrast{ch},frameRate,false); %#ok<NASGU,ASGLU>
         catch err
             warning(err.message);
         end
@@ -552,7 +542,7 @@ if plotFlag
     fig_corr = figure('name',['SCOS Corr ' recName],'Units','Normalized','Position',[0.01,1-0.16-nOfChannels*0.15,0.9,0.05+nOfChannels*0.15]);
     for ch = 1:nOfChannels
         try
-            [corr_SNR,corr_FFT,corr_freq,corr_pulseFreq,corr_pulseBPM] = CalcSNR_Pulse(corrSpeckleContrast{ch},frameRate,false);
+            [corr_SNR,corr_FFT,corr_freq,corr_pulseFreq,corr_pulseBPM] = CalcSNR_Pulse(corrSpeckleContrast{ch},frameRate,false); %#ok<NASGU,ASGLU>
         catch err
             warning(err.message);
         end
@@ -598,4 +588,3 @@ end
 %%
 toc(start_scos)
 end
-
