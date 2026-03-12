@@ -178,7 +178,6 @@ end
 function timeVecFile = localLoadTimeVec(folderPath, metadata, nOfFrames)
 timeVecFile = nan([nOfFrames 1]);
 camTsPath = fullfile(folderPath,'timestamps_camera_us.npy');
-hostTsPath = fullfile(folderPath,'timestamps_host_elapsed_ms.npy');
 if exist(camTsPath,'file') == 2
     camUs = double(localReadWholeNpy(camTsPath)); camUs = camUs(:);
     if numel(camUs) == nOfFrames
@@ -187,16 +186,6 @@ if exist(camTsPath,'file') == 2
             timeVecFile = datenum(dt);
         else
             timeVecFile = camUs/1e6;
-        end
-    end
-elseif exist(hostTsPath,'file') == 2
-    hostMs = double(localReadWholeNpy(hostTsPath)); hostMs = hostMs(:);
-    if numel(hostMs) == nOfFrames
-        if isfield(metadata,'capture_start_unix_s')
-            dt = datetime(double(metadata.capture_start_unix_s)+hostMs/1e3,'ConvertFrom','posixtime');
-            timeVecFile = datenum(dt);
-        else
-            timeVecFile = hostMs/1e3;
         end
     end
 end

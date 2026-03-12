@@ -405,7 +405,7 @@ end
 
 start_scos = tic;
 
-batchSize = 1;
+batchSize = 1000;
 for batchStart = 1:batchSize:nOfFrames
     batchCount = min(batchSize, nOfFrames - batchStart + 1);
     [batchRec,batchTimeVec,~,batchSourceFiles] = LoadNpyRecordingRange(recName,batchStart,batchCount);
@@ -464,7 +464,15 @@ end
 fprintf('\n');
 
 %% Create Time vector
-timeVec = (0:(nOfFrames-1))'*(1/frameRate);   % FR = FrameRate
+if all(~isnan(timeVecFile))
+    if max(timeVecFile) > 1e5
+        timeVec = (timeVecFile - timeVecFile(1)) * 24 * 3600; % datenum -> seconds elapsed
+    else
+        timeVec = timeVecFile - timeVecFile(1);
+    end
+else
+    timeVec = (0:(nOfFrames-1))'*(1/frameRate);   % fallback when timestamps are unavailable
+end
 p2p_time = timeVec<timePeriodForP2P; %#ok<NASGU>
 
 % Calculate BFI for all channels
