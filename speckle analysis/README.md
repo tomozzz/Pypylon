@@ -10,7 +10,6 @@
 
 ### 任意（あると時刻情報が改善）
 - `timestamps_camera_us.npy`
-- `timestamps_host_elapsed_ms.npy`
 - `metadata.json`
 
 ## 解析フロー

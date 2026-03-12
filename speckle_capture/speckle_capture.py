@@ -259,9 +259,7 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
         capture_start_unix_s = time.time()
 
         frames: list[np.ndarray] = []
-        cam_timestamp_ticks: list[int] = []
         cam_timestamp_us: list[float] = []
-        host_elapsed_ms: list[float] = []
 
         dropped_total = 0
         dropped_since_last_notice = 0
@@ -281,7 +279,6 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
 
                 frame = result.Array.copy()
                 frames.append(frame)
-                host_elapsed_ms.append((time.perf_counter() - capture_start_monotonic_s) * 1000.0)
 
                 tick_val: int | None = None
                 if chunk_timestamp_enabled:
@@ -293,14 +290,12 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
                 if tick_val is None:
                     # Fallback to host timer in microseconds.
                     elapsed_us = (time.perf_counter() - capture_start_monotonic_s) * 1_000_000.0
-                    cam_timestamp_ticks.append(-1)
                     cam_timestamp_us.append(elapsed_us)
                 else:
-                    cam_timestamp_ticks.append(tick_val)
                     if tick_frequency_hz and tick_frequency_hz > 0:
                         cam_timestamp_us.append((tick_val / tick_frequency_hz) * 1_000_000.0)
                     else:
-                        # If frequency is unknown, keep raw ticks and also store numeric value as-is.
+                        # If frequency is unknown, keep raw tick value as-is in microsecond vector.
                         cam_timestamp_us.append(float(tick_val))
             finally:
                 result.Release()
@@ -360,13 +355,10 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
                 np.save(chunk_path, chunk_arr)
                 frame_files.append(chunk_path.name)
 
-        cam_ticks_arr = np.asarray(cam_timestamp_ticks, dtype=np.int64)
         cam_us_arr = np.asarray(cam_timestamp_us, dtype=np.float64)
-        host_elapsed_arr = np.asarray(host_elapsed_ms, dtype=np.float64)
-
-        np.save(output_dir / "timestamps_camera_ticks.npy", cam_ticks_arr)
+        # Reduce timestamp granularity to 0.1 ms (100 us) to keep file size smaller.
+        cam_us_arr = np.round(cam_us_arr / 100.0) * 100.0
         np.save(output_dir / "timestamps_camera_us.npy", cam_us_arr)
-        np.save(output_dir / "timestamps_host_elapsed_ms.npy", host_elapsed_arr)
 
         metadata = {
             "frame_count_requested": cfg.frame_count,
@@ -390,7 +382,7 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
                 "tick_frequency_hz": tick_frequency_hz,
                 "camera_us_note": (
                     "camera_us is converted from camera ticks when tick_frequency_hz is available; "
-                    "otherwise camera_us stores raw tick value."
+                    "otherwise camera_us stores raw tick value. Values are quantized to 100 us (0.1 ms)."
                 ),
             },
             "config": cfg.__dict__,
