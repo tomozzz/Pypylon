@@ -1,5 +1,6 @@
-function [im, t, frameName] = LoadNpyRecordingFrame(recPath, frameIndex, sourceFiles)
+function [im, t, frameName, exposureTimeUs, sequencerSetId] = LoadNpyRecordingFrame(recPath, frameIndex, sourceFiles)
 % LoadNpyRecordingFrame Load one frame (1-based) from npy/chunked recording.
+% Optional outputs exposureTimeUs and sequencerSetId are NaN for legacy data.
 if nargin < 3 || isempty(sourceFiles)
     error('LoadNpyRecordingFrame:MissingSource','sourceFiles metadata is required. Call LoadNpyRecordingMeta first.');
 end
@@ -25,6 +26,15 @@ else
     t = NaN;
 end
 
+exposureTimeUs = NaN;
+if isfield(sourceFiles,'exposureTimesUs') && numel(sourceFiles.exposureTimesUs) >= frameIndex
+    exposureTimeUs = double(sourceFiles.exposureTimesUs(frameIndex));
+end
+sequencerSetId = NaN;
+if isfield(sourceFiles,'sequencerSetIds') && numel(sourceFiles.sequencerSetIds) >= frameIndex
+    sequencerSetId = double(sourceFiles.sequencerSetIds(frameIndex));
+end
+
 [~,name,ext] = fileparts(sourceFiles.framePaths{chunkIdx});
 frameName = sprintf('%s%s#%d',name,ext,localIdx);
 end
@@ -35,6 +45,8 @@ switch dtypeName
     case 'uint8', arr = uint8(pyArr);
     case 'uint16', arr = uint16(pyArr);
     case 'int16', arr = int16(pyArr);
+    case 'int32', arr = int32(pyArr);
+    case 'int64', arr = int64(pyArr);
     case {'single','float32'}, arr = single(pyArr);
     case {'double','float64'}, arr = double(pyArr);
     otherwise, arr = double(pyArr);

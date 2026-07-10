@@ -11,6 +11,9 @@ if isempty(sourceFiles.startDateTime)
     sourceFiles.startDateTime = datestr(now);
 end
 info.sourceFiles = sourceFiles;
+info.exposureTimesUs = sourceFiles.exposureTimesUs;
+info.sequencerSetIds = sourceFiles.sequencerSetIds;
+info.timestampsCameraUs = sourceFiles.timestampsCameraUs;
 end
 
 

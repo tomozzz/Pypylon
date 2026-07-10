@@ -24,44 +24,126 @@ py -3 speckle_capture/speckle_capture.py \
 ```
 ※ `python` コマンドが正常な環境では、`python ...` でも実行できます。
 
-### プログラムの流れ
-1. 設定ファイルを読み込む。  
-2. カメラに接続し、解像度・露光・ゲイン・トリガなどを適用。  
-3. フレーム取得を開始。  
-4. 停止条件（`frame_count` または `measurement_duration_s`）まで取得。  
-5. `frames.npy`、タイムスタンプ配列、`metadata.json` を保存。  
+### 露光モード
 
-### パラメータ（`capture_config.example.yaml`）
+露光時間の単位は、`exposure_time`と`exposure_times_us`のどちらも **µs（マイクロ秒）** です。
 
-#### まず設定すべき最小項目
-- `output_dir`: 保存先フォルダ
-- `measurement_duration_s` **または** `frame_count`: 停止条件
-- `exposure_time`: 露光時間（明るさを決める最重要項目）
-- `gain`: ゲイン（露光で足りないときに調整）
+従来の単一露光はそのまま利用できます。
 
-#### 各項目の意味
-- `output_dir`: 出力先ディレクトリ。
-- `camera_index`: 使用カメラ番号（複数接続時）。
-- `timeout_ms`: 1フレーム待機のタイムアウト。
-- `frame_count`: 取得フレーム数で停止（`null`で無効）。
-- `measurement_duration_s`: 取得時間で停止（`null`で無効）。
-- `width`, `height`: 撮像サイズ。
-- `offset_x`, `offset_y`: ROI左上オフセット。
-- `pixel_format`: 画素フォーマット（例: `Mono12`）。
-- `gain`: アナログ/デジタル増幅量。
-- `exposure_time`: 露光時間（通常 µs）。
-- `black_level`: 黒レベルオフセット。
-- `trigger_mode`: トリガ使用有無（`On`/`Off`）。
-- `trigger_source`: トリガ入力源（例: `Line1`, `Software`）。
-- `trigger_delay`: トリガから露光開始までの遅延。
-- `trigger_activation`: エッジ条件（`RisingEdge` など）。
-- `enable_acquisition_frame_rate`: フレームレート制御を有効化するか。
-- `acquisition_frame_rate`: 目標フレームレート（fps）。
+```yaml
+exposure_time: 1000.0
+```
 
-### 出力
-- `frames.npy`（`(N,H,W)`）
-- `timestamps_camera_us.npy`
-- `metadata.json`（camera serial/model/vendor を含む）
+カメラ内部のSequencerで1 msと10 msを交互に撮像する例です。配列は任意長で、2条件に限定されません。
+
+```yaml
+exposure_times_us:
+  - 1000.0
+  - 10000.0
+```
+
+- `exposure_times_us`がある場合はSequencer撮像、ない場合は`exposure_time`による固定露光です。
+- 両方がある場合は`exposure_times_us`を優先し、起動時に警告します。
+- 空配列、非数、0以下、カメラの`ExposureTime`範囲外の値は撮像前にエラーになります。
+- 1要素の`exposure_times_us`も有効です。Sequencerは動作しますが、撮像結果は固定露光と同等です。
+
+### Sequencer対応条件
+
+交互露光にはBaslerのカメラ内蔵Sequencerと`SequencerSetActive` Chunkが必要です。acA1440-220umでは、USB版Sequencerの`SequencerMode`、`SequencerConfigurationMode`、`SequencerSetSelector`、`SequencerSetSave/Load`、`SequencerPathSelector`、`SequencerTriggerSource`、`SequencerSetNext`を使用します。各SetのPath 1を`FrameStart`で次のSetへ進め、最後のSetからSet 0へ戻します。
+
+必要ノードまたは`SequencerSetActive` Chunkがないカメラでは、フレーム単位の対応を保証できないため、明確なエラーで撮像を中止します。Pythonループで`ExposureTime`を書き換える方式へはフォールバックしません。詳細は[Basler公式のace Classic/U/L USB Sequencer資料](https://docs.baslerweb.com/sequencer-%28ace-classic-u-l-usb%29)を参照してください。
+
+### 長時間計測と逐次保存
+
+長時間計測では次の設定を推奨します。
+
+```yaml
+frames_per_file: 1000
+writer_queue_max_chunks: 2
+progress_interval_s: 5.0
+```
+
+`frames_per_file: 1000`では、1000フレームごとに撮像バッファをSSD保存ワーカーへ渡し、保存後にメモリから解放します。撮像スレッドと`np.save`処理は分離され、書き込みキューは`writer_queue_max_chunks`で有界です。SSDが追いつかずキューが満杯になった場合は警告を表示して撮像側へバックプレッシャーをかけ、黙ってフレームを破棄しません。
+
+各`.npy`は`.npy.tmp`へ書いた後に正式名へ置き換えます。1チャンク内の4ファイルのいずれかで保存に失敗した場合、その未完成チャンクだけを除去し、それ以前の完成済みチャンクは維持します。
+
+`frames_per_file`未指定時は後方互換のため`frames.npy`を出力しますが、撮像終了まで全フレームをメモリに保持するため長時間計測には不向きです。
+
+### 分割出力とフレーム対応
+
+チャンク保存時は同じ開始・終了インデックスで4ファイルを保存します。
+
+```text
+frames_00000000_00000999.npy
+timestamps_camera_us_00000000_00000999.npy
+exposure_times_us_00000000_00000999.npy
+sequencer_set_ids_00000000_00000999.npy
+```
+
+取得失敗フレームは画像・タイムスタンプ・露光時間・Set IDのいずれにも追加されないため、各配列の長さとインデックス対応は常に一致します。Sequencer撮像では、偶数・奇数ではなく各画像の`ChunkSequencerSetActive`を使用します。`ChunkExposureTime`がある場合は実測Chunk値を保存し、ない場合だけ実測Set IDから撮像前の読み戻し露光値へ対応付けます。
+
+正常終了時は利便性のため、分割メタデータから次の全長配列も作成します。異常終了時でも分割ファイルから復元できます。
+
+```text
+timestamps_camera_us.npy
+exposure_times_us.npy
+sequencer_set_ids.npy
+```
+
+`metadata.json`は撮像開始時に`capture_status: in_progress`で作成され、チャンクごとに保存フレーム数、チャンク数、最終インデックス、保存量を更新します。終了状態は`completed`、ユーザー中断は`interrupted`、例外は`failed`です。
+
+### 進捗と保存性能ログ
+
+`progress_interval_s`ごとに、撮像済み・保存済みフレーム、経過時間、実効fps、進捗率、ETA、保存済みチャンク・容量、現在のバッファ、書き込みキュー、取得失敗数を表示します。各チャンクについてファイル名、範囲、フレーム数、データ量、保存時間、書き込み速度も表示し、終了時には成功・中断・失敗のいずれでもサマリーを表示します。
+
+### MATLABローダーとSCOS解析
+
+`LoadNpyRecordingMeta`、`LoadNpyRecording`、`LoadNpyRecordingRange`、`LoadNpyRecordingFrame`は新しいメタデータを任意項目として読み込みます。旧記録にファイルがなくても従来どおり動作します。
+
+```matlab
+[rec,timeVec,info,sourceFiles] = LoadNpyRecordingRange(folder,1001,500);
+exposureTimesUs = info.exposureTimesUs;  % 指定範囲だけ
+sequencerSetIds = info.sequencerSetIds;
+exposureMode = info.exposureMode;
+exposureSequenceUs = info.exposureSequenceUs;
+```
+
+`SCOSvsTime_WithNoiseSubtraction_Ver2`は保存された露光時間でフレームを分離し、各条件の元タイムスタンプを維持したまま独立に`rawSpeckleContrast`、`corrSpeckleContrast`、`BFI`、`rBFI`、`meanIntensity`を計算します。
+
+```matlab
+[timeVec,rawK,corrK,meanI,info,results] = ...
+    SCOSvsTime_WithNoiseSubtraction_Ver2(recName,darkName,7,false,true);
+
+results.byExposure(1).exposureTimeUs
+results.byExposure(1).timeVec
+results.byExposure(1).BFI
+results.byExposure(1).rBFI
+```
+
+複数露光時は混在した従来形式の`BFI_output.mat`を作らず、`SCOS_byExposure.mat`と`BFI_output_exp_<露光時間>us.mat`を保存します。単一露光時は従来の変数名とファイル名を維持します。
+
+1 ms系列と10 ms系列は同一瞬間の完全な同時計測ではなく、時分割の交互計測です。2条件を1回ずつ循環させる場合、各系列の実効サンプリングレートは概ね全体fpsの1/2です。一般のK条件では概ね1/Kですが、解析時間軸にはこの概算値ではなく`timestamps_camera_us`から抽出した実時刻を使用します。
+
+### ノイズ補正上の制約
+
+異なる露光時間の画像を混ぜて平均しません。空間ノイズ・強度フィットも露光時間ごとのフレームだけで計算します。一方、現状のAPIでは露光時間別Darkデータをまだ受け取らないため、同じDark/read-noise補正値を各露光条件へ適用します。露光時間で信号・ショットノイズ寄与が変わるため、条件間の絶対比較は慎重に解釈してください。内部結果は`results.byExposure`へ分けてあり、将来、露光別Darkデータを追加できる構造です。
+
+`Pypylon_realtime/realtime_scos.py`のリアルタイム交互露光解析は今回未実装です。将来は同じChunk Set IDでフレームをルーティングし、露光条件ごとに独立した補正状態と描画更新周期を持たせます。
+
+### テスト
+
+実カメラなしのPythonテストは`pytest`不要で、標準の`unittest`から実行できます（NumPy、PyYAMLは必要です）。
+
+```bash
+python -m py_compile speckle_capture/speckle_capture.py
+python -m unittest discover -s tests -v
+```
+
+MATLABとPython連携が設定済みの環境では、次を実行します。
+
+```matlab
+runtests(fullfile('speckle analysis','tests'))
+```
 
 ---
 

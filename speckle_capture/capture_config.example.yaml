@@ -1,6 +1,6 @@
 # Basler Speckle capture config (pypylon)
 # Units:
-# - exposure_time: microseconds (camera dependent)
+# - exposure_time / exposure_times_us: microseconds (camera dependent)
 # - trigger_delay: microseconds (camera dependent)
 # - acquisition_frame_rate: frames/sec
 # - measurement_duration_s: seconds
@@ -16,8 +16,14 @@ timeout_ms: 5000
 frame_count: null
 measurement_duration_s: 10.0
 
-# Optional: split frame output into multiple .npy files to reduce peak memory usage
-# frames_per_file: 1000
+# Recommended for long recordings: save each full chunk while acquisition runs.
+frames_per_file: 1000
+
+# Bounded number of completed chunks waiting for the SSD writer.
+writer_queue_max_chunks: 2
+
+# Progress log interval. Per-frame logging is intentionally avoided.
+progress_interval_s: 5.0
 
 # Requested camera parameters
 width: 1024
@@ -27,6 +33,13 @@ offset_y: 0
 pixel_format: "Mono12"
 gain: 0.0
 exposure_time: 1000.0
+
+# Camera-side cyclic exposure Sequencer. When present, this array takes
+# precedence over exposure_time. Values are in microseconds and may contain
+# one or more entries. Uncomment to alternate 1 ms / 10 ms:
+# exposure_times_us:
+#   - 1000.0
+#   - 10000.0
 black_level: 0.0
 trigger_mode: "Off"              # Off / On
 trigger_source: "Line1"          # Software / Line1 / ...
