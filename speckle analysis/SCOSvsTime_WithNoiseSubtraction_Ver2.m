@@ -22,7 +22,7 @@
 %                a boolaen map the same size as the record.
 %  ---------------------------------------------------------------------------------------------------------
 
-function  [ timeVec, rawSpeckleContrast , corrSpeckleContrast, meanVec , info] = ...
+function  [ timeVec, rawSpeckleContrast , corrSpeckleContrast, meanVec , info, results] = ...
     SCOSvsTime_WithNoiseSubtraction_Ver2(recName,backgroundName,windowSize,plotFlag,maskInput)
 if nargin < 4
     plotFlag = true;
@@ -95,12 +95,46 @@ end
 isNpyRecord = exist(recName,'dir') == 7 && (exist(fullfile(recName,'frames.npy'),'file') == 2 || ~isempty(dir(fullfile(recName,'frames_*.npy'))));
 
 if isNpyRecord
-    [~, info, sourceFiles] = LoadNpyRecordingMeta(recName);
+    [timeVecMetadata, info, sourceFiles] = LoadNpyRecordingMeta(recName);
     nOfFrames = sourceFiles.totalFrames;
-    nPreview = min(20,nOfFrames);
+
+    perFrameExposureUs = [];
+    if isfield(info,'exposureTimesUs')
+        perFrameExposureUs = info.exposureTimesUs;
+    end
+    exposureSequenceUs = [];
+    if isfield(info,'exposureSequenceUs')
+        exposureSequenceUs = info.exposureSequenceUs;
+    elseif isfield(info,'name') && isfield(info.name,'expT') && ...
+            isnumeric(info.name.expT) && isscalar(info.name.expT) && isfinite(info.name.expT)
+        exposureSequenceUs = double(info.name.expT) * 1000; % legacy info.name.expT is ms
+    end
+    [exposureGroupIndex, exposureGroupValuesUs, exposureGroupDetails] = ...
+        GroupExposureFrames(perFrameExposureUs, exposureSequenceUs, nOfFrames);
+    nExposureGroups = numel(exposureGroupValuesUs);
+    isMultipleExposure = nExposureGroups > 1;
+
+    sequencerSetIds = [];
+    if isfield(info,'sequencerSetIds')
+        sequencerSetIds = info.sequencerSetIds;
+    end
+    if isempty(sequencerSetIds)
+        sequencerSetIds = nan(nOfFrames,1);
+    else
+        sequencerSetIds = double(sequencerSetIds(:));
+        if numel(sequencerSetIds) ~= nOfFrames
+            error('SCOSvsTime:SequencerSetLength', ...
+                'sequencerSetIds contains %d values for %d frames.',numel(sequencerSetIds),nOfFrames);
+        end
+    end
+
+    % A mixed-exposure preview would average different signal/noise regimes.
+    % Use only the first exposure condition to define the common spatial ROI.
+    previewIndices = find(exposureGroupIndex == 1);
+    nPreview = min(20,numel(previewIndices));
     previewRec = zeros([sourceFiles.imageSize nPreview]);
     for k=1:nPreview
-        previewRec(:,:,k) = double(LoadNpyRecordingFrame(recName,k,sourceFiles));
+        previewRec(:,:,k) = double(LoadNpyRecordingFrame(recName,previewIndices(k),sourceFiles));
     end
     mean_frame = mean(previewRec,3);
     im1 = previewRec(:,:,1);
@@ -179,8 +213,9 @@ if ~exist('masks','var')
     else
         M = load(maskFile);
         if isfield(M,'mask')
-            masks{1} = false(size(mask));
-            masks{1}(ws2+1:end-ws2,ws2+1:end-ws2) = mask(ws2+1:end-ws2);
+            masks{1} = false(size(M.mask));
+            masks{1}(ws2+1:end-ws2,ws2+1:end-ws2) = ...
+                M.mask(ws2+1:end-ws2,ws2+1:end-ws2);
             totMask = M.mask > 0;
             channels.Centers = M.circ.Center;
             channels.Radii  = M.circ.Radius;
@@ -200,13 +235,16 @@ totMask( : , [ 1:ws2 (end-ws2+1):end ]) = false;
 upFolders = strsplit(recName,filesep);
 shortRecName = strjoin(upFolders(max(1,end-2):end)); %#ok<NASGU>
 
-if backgroundName~=0
+if ~isequal(backgroundName,0)
     if exist(backgroundName,'dir') == 7 && (exist(fullfile(backgroundName,'frames.npy'),'file') == 2 || ~isempty(dir(fullfile(backgroundName,'frames_*.npy'))))
         [~,info_background] = LoadNpyRecordingMeta(backgroundName);
     else
         info_background = GetRecordInfo(backgroundName);
     end
-    fields = {'expT','Gain','BL'};
+    fields = {'Gain','BL'};
+    if ~isMultipleExposure
+        fields = [{'expT'} fields];
+    end
     for fi = 1:numel(fields)
         param = fields{fi};
         if isfield(info_background,'name') && isfield(info_background.name,param) && ...
@@ -228,97 +266,38 @@ else
     frameRate = info.name.FR; 
 end
 
+[allTimeVec, usedCameraTimestamps] = BuildExposureTimeAxis(timeVecMetadata,nOfFrames,frameRate);
+timeVecFile = timeVecMetadata;
+if isempty(timeVecFile) || all(isnan(timeVecFile))
+    % Preserve the legacy saved timeVecFile convention (1/frameRate origin),
+    % while allTimeVec itself is normalized to zero by BuildExposureTimeAxis.
+    timeVecFile = (1:nOfFrames)' ./ frameRate;
+end
+if usedCameraTimestamps
+    info.timeAxisSource = 'camera_timestamp';
+else
+    info.timeAxisSource = 'frame_rate_fallback';
+end
+
+if ~isfield(info.name , 'BL' ) || ~isnumeric(info.name.BL) || isempty(info.name.BL)
+    BlackLevel = 0;
+else
+    BlackLevel = info.name.BL;
+end
+
 %% Get Background and Background Noise
 start_calib_time = tic;
 disp('Load Background');
 if ~exist(backgroundName,'file')
     error([backgroundName,' does not exist!']);
 end
-
-requiredBG_nOfFrames = 400;
-if exist(backgroundName,'file') == 7 % it's a folder
-    if exist(fullfile(backgroundName,'frames.npy'),'file') == 2 || ~isempty(dir(fullfile(backgroundName,'frames_*.npy')))
-        [~,~,bgSourceFiles] = LoadNpyRecordingMeta(backgroundName);
-        nOfFramesBG = bgSourceFiles.totalFrames;
-        if nOfFramesBG < requiredBG_nOfFrames
-            error('Not enough frames in background file. Required : %d , Exist : %d',requiredBG_nOfFrames,nOfFramesBG);
-        end
-        bgRec = zeros([bgSourceFiles.imageSize requiredBG_nOfFrames]);
-        for bi = 1:requiredBG_nOfFrames
-            bgRec(:,:,bi) = double(LoadNpyRecordingFrame(backgroundName,bi,bgSourceFiles));
-        end
-        background = mean(bgRec,3);
-        darkVar = std(double(bgRec),0,3).^2;
-        if isfield(info_background,'name') && isfield(info_background.name,'BL') && ~isnan(info_background.name.BL)
-            background = background - info_background.name.BL;
-        end
-    elseif exist( [ backgroundName '\meanIm.mat'],'file')
-        bgS = load([ backgroundName '\meanIm.mat']);
-        if ~isfield(bgS,'nOfFrames') 
-            nOfFramesBG = GetNumOfFrames(backgroundName); 
-        else
-            nOfFramesBG = bgS.nOfFrames;
-        end
-        if nOfFramesBG < requiredBG_nOfFrames
-            error('Not enough frames in background file. Required : %d , Exist : %d',requiredBG_nOfFrames,nOfFramesBG);
-        end
-        if isfield(bgS,'recVar')
-            background = bgS.recMean - info_background.name.BL;
-            darkVar = bgS.recVar;
-        else
-            delete([ backgroundName '\meanIm.mat']);
-            [ background , darkVar ] = ReadRecordVarAndMean( backgroundName );
-            background = background - info_background.name.BL;
-        end
-        clear bgS
-    else
-        nOfFramesBG = GetNumOfFrames(backgroundName);
-        if nOfFramesBG < requiredBG_nOfFrames
-            error('Not enough frames in background file. Required : %d , Exist : %d',requiredBG_nOfFrames,nOfFramesBG);
-        end
-        [ background , darkVar ] = ReadRecordVarAndMean( backgroundName );
-        background =  background - info_background.name.BL;
-        
-        if abs(mean2(background)) > 3
-            my_imagesc(background); title('Background');
-            warning('Suspicious level of the background %gDU !', round(mean2(background),2));
-        end        
-    end  
-    if ~isequal(size(mean_frame),size(background))
-        if exist([recName '\ROI.mat'],'file')
-            ROI = load([recName '\ROI.mat']);
-            if ( ROI.xLimits(end) > size(background,2) || ROI.xLimits(end)>size(background,2) )
-                error(['ROI.xLimits = ' num2str(ROI.xLimits) ' ROI.yLimits = ' num2str(ROI.yLimits) ' darkIm size = [' num2str(size(background)) ']'])
-            else
-                background  = background(ROI.yLimits(1):ROI.yLimits(2),ROI.xLimits(1):ROI.xLimits(2));
-                darkVar     = darkVar(ROI.yLimits(1):ROI.yLimits(2),ROI.xLimits(1):ROI.xLimits(2));
-            end
-        else
-            error(['Background size is ' num2str(size(background)) ' but record size is ' num2str(size(mean_frame))]);
-        end
-    end
-elseif endsWith(backgroundName,'.mat')
-    bgS = load( backgroundName );
-    fields = fieldnames(bgS);
-    if ismember(fields, 'recMean')
-        background = bgS.recMean - info_background.name.BL;
-    elseif startsWith(fields{1}, 'Video')
-        darkRec = bgS.(fields{1}); 
-        bgS.recMean = mean(darkRec,3);
-        background = bgS.recMean - info_background.name.BL;
-        darkVar = std(double(darkRec),0,3).^2;
-        bgS.recVar   = darkVar;
-        save(backgroundName,'-struct','bgS')
-    else
-        error('wrong fields')
-    end
-    clear bgS
-end
-
-darkVarPerWindow = imboxfilt(darkVar,windowSize);
-
-if ~isequal(size(background),size(im1))
-    error('The background should be the same picture size as the record. Record size is [%d,%d], but background size is [%d,%d]',size(im1,1), size(im1,2), size(background,1), size(background,1));
+[backgroundByExposure, darkVarByExposure, darkCalibrationInfo] = ...
+    localLoadDarkCorrections(backgroundName,info_background,mean_frame,recName, ...
+        exposureGroupValuesUs,nExposureGroups);
+darkVarPerWindowByExposure = cell(1,nExposureGroups);
+for exposureIdx = 1:nExposureGroups
+    darkVarPerWindowByExposure{exposureIdx} = ...
+        imboxfilt(darkVarByExposure{exposureIdx},windowSize);
 end
 
 %% Get G[DU/e]
@@ -326,37 +305,9 @@ nOfBits = info.nBits;
 actualGain = GetActualGain(info);
  
 %% Calc spatialNoise 
-if ~isfield(info.name , 'BL' )
-    BlackLevel = 0;
-else
-    BlackLevel = info.name.BL;
-end
-
-smoothCoeffFile = [recName  '\smoothingCoefficients.mat'];
-if ~exist(smoothCoeffFile,'file') 
-    % TBD check if it was calculated with the same mask & window size
-    disp('Calc Spatial Noise and Smoothing Coefficients');
-    numFramesForSPNoise = 600;
-    if nOfFrames > 1000
-        numFramesForSPNoise=1000;
-    end
-    spRec = zeros([sourceFiles.imageSize numFramesForSPNoise]);
-    for si = 1:numFramesForSPNoise
-        spRec(:,:,si) = double(LoadNpyRecordingFrame(recName,si,sourceFiles));
-    end
-    spRec = spRec - BlackLevel;
-    spIm = mean(spRec,3) - background;
-    fig_spIm = my_imagesc(spIm); title(['Image average ' num2str(numFramesForSPNoise) ' frames'] );
-    savefig(fig_spIm, [recName '\spIm.fig']);
-    spVar = stdfilt( spIm ,true(windowSize)).^2;
-    [fitI_A,fitI_B] = FitMeanIm(spRec,totMask,windowSize);
-    clear spRec
-    save(smoothCoeffFile,'spVar','fitI_A','fitI_B','spIm','totMask');
-else
-    % TBD check if it was calculated with the same mask & window size
-    disp('Load Spatial Noise and Smoothing Coefficients');
-    load(smoothCoeffFile);
-end
+spatialCalibration = localBuildSpatialCorrections(recName,sourceFiles, ...
+    exposureGroupIndex,exposureGroupValuesUs,backgroundByExposure, ...
+    BlackLevel,totMask,windowSize,plotFlag);
 
 disp('Calibration Time')
 toc(start_calib_time)
@@ -380,19 +331,26 @@ masks_cut = cell(size(masks));
 for ch = 1:numel(masks)    
     masks_cut{ch} = masks{ch}(roi.y  , roi.x); 
 end
-   
-fitI_A_cut =  fitI_A(roi.y  , roi.x);
-fitI_B_cut =  fitI_B(roi.y  , roi.x);
+
+analysisCalibration = repmat(struct(),1,nExposureGroups);
+for exposureIdx = 1:nExposureGroups
+    analysisCalibration(exposureIdx).exposureTimeUs = exposureGroupValuesUs(exposureIdx);
+    analysisCalibration(exposureIdx).background = backgroundByExposure{exposureIdx};
+    analysisCalibration(exposureIdx).fitI_A_cut = ...
+        spatialCalibration(exposureIdx).fitI_A(roi.y,roi.x);
+    analysisCalibration(exposureIdx).fitI_B_cut = ...
+        spatialCalibration(exposureIdx).fitI_B(roi.y,roi.x);
+    analysisCalibration(exposureIdx).spVar_cut = ...
+        spatialCalibration(exposureIdx).spVar(roi.y,roi.x);
+    analysisCalibration(exposureIdx).darkVarPerWindow_cut = ...
+        darkVarPerWindowByExposure{exposureIdx}(roi.y,roi.x);
+end
 
 %% Calc Specle Contrast
 disp(['Calculating SCOS on "' recName '" ... ']);
 disp(['Mono' num2str(nOfBits)]);
 nOfChannels = numel(masks);
 frameNames = cell(nOfFrames,1);
-
-% init loop vars
-[ rawSpeckleContrast , corrSpeckleContrast , meanVec] = InitNaN([nOfFrames 1],nOfChannels);
-timeVecFile = nan([nOfFrames 1]);
 
 im1 = double(im1);
 
@@ -403,12 +361,26 @@ elseif nOfBits == 10  && all(mod(im1(:),2^6) == 0)
     devide_by = 2^6;
 end
 
+seriesTemplate = struct('frameIndices',[],'frameNames',{{}}, ...
+    'rawSpeckleContrast',[],'corrSpeckleContrast',[],'meanIntensity',[], ...
+    'writeCount',0);
+exposureSeries = repmat(seriesTemplate,1,nExposureGroups);
+for exposureIdx = 1:nExposureGroups
+    indices = find(exposureGroupIndex == exposureIdx);
+    nSeriesFrames = numel(indices);
+    exposureSeries(exposureIdx).frameIndices = indices;
+    exposureSeries(exposureIdx).frameNames = cell(nSeriesFrames,1);
+    exposureSeries(exposureIdx).rawSpeckleContrast = nan(nSeriesFrames,nOfChannels);
+    exposureSeries(exposureIdx).corrSpeckleContrast = nan(nSeriesFrames,nOfChannels);
+    exposureSeries(exposureIdx).meanIntensity = nan(nSeriesFrames,nOfChannels);
+end
+
 start_scos = tic;
 
 batchSize = 1000;
 for batchStart = 1:batchSize:nOfFrames
     batchCount = min(batchSize, nOfFrames - batchStart + 1);
-    [batchRec,batchTimeVec,~,batchSourceFiles] = LoadNpyRecordingRange(recName,batchStart,batchCount);
+    [batchRec,~,~,batchSourceFiles] = LoadNpyRecordingRange(recName,batchStart,batchCount);
 
     for j = 1:batchCount
         i = batchStart + j - 1;
@@ -424,65 +396,103 @@ for batchStart = 1:batchSize:nOfFrames
             end
         end
 
-        im_raw = double(batchRec(:,:,j)) / devide_by;
-        im_raw = im_raw - BlackLevel;
         frameNames{i} = batchSourceFiles.frameNames{j};
+        exposureIdx = exposureGroupIndex(i);
+        seriesPosition = exposureSeries(exposureIdx).writeCount + 1;
+        [rawRow,corrRow,meanRow] = localCalculateScosFrame( ...
+            batchRec(:,:,j),devide_by,BlackLevel,analysisCalibration(exposureIdx), ...
+            roi,masks_cut,windowSize,actualGain);
+        exposureSeries(exposureIdx).rawSpeckleContrast(seriesPosition,:) = rawRow;
+        exposureSeries(exposureIdx).corrSpeckleContrast(seriesPosition,:) = corrRow;
+        exposureSeries(exposureIdx).meanIntensity(seriesPosition,:) = meanRow;
+        exposureSeries(exposureIdx).frameNames{seriesPosition} = frameNames{i};
+        exposureSeries(exposureIdx).writeCount = seriesPosition;
 
-        if numel(batchTimeVec) >= j && ~isnan(batchTimeVec(j))
-            timeVecFile(i) = batchTimeVec(j);
-        else
-            timeVecFile(i) = i/frameRate;
-        end
-
-        im = im_raw - background;
-        im_cut = im(roi.y,roi.x);
-        stdIm = stdfilt(im_cut,true(windowSize));
-
-        for ch = 1:nOfChannels
-            meanFrame = mean(im_cut(masks_cut{ch}));
-            fittedI = fitI_A_cut*meanFrame + fitI_B_cut;
-            fittedISquare = fittedI.^2;
-
-            rawSpeckleContrast{ch}(i) = mean((stdIm(masks_cut{ch}).^2 ./ fittedISquare(masks_cut{ch})));
-            corrSpeckleContrast{ch}(i) = mean((stdIm(masks_cut{ch}).^2 - actualGain.*fittedI(masks_cut{ch}) - spVar(masks_cut{ch}) - 1/12 - darkVarPerWindow(masks_cut{ch})) ./ fittedISquare(masks_cut{ch}));
-            meanVec{ch}(i) = meanFrame;
-
-            if i==1
-                fprintf('<I>=%.3gDU , K_raw = %.5g , Ks=%.5g , Kr=%.5g, Ksp=%.5g, Kq=%.5g, Kf=%.5g\n', ...
-                    meanFrame, rawSpeckleContrast{ch}(i), ...
-                    mean(actualGain.*fittedI(masks_cut{ch})./fittedISquare(masks_cut{ch})), ...
-                    mean(darkVar(masks_cut{ch})./fittedISquare(masks_cut{ch})), ...
-                    mean(spVar(masks_cut{ch})./fittedISquare(masks_cut{ch})), ...
-                    mean(1./(12*fittedISquare(masks_cut{ch}))), ...
-                    corrSpeckleContrast{ch}(i));
-            end
+        if seriesPosition == 1
+            fprintf('[EXPOSURE %.12g us] <I>=%.3g DU, K_raw=%.5g, K_corr=%.5g\n', ...
+                exposureGroupValuesUs(exposureIdx),meanRow(1),rawRow(1),corrRow(1));
         end
     end
 
-    clear batchRec batchTimeVec batchSourceFiles
+    clear batchRec batchSourceFiles
 end
 fprintf('\n');
 
-%% Create Time vector
-if all(~isnan(timeVecFile))
-    if max(timeVecFile) > 1e5
-        timeVec = (timeVecFile - timeVecFile(1)) * 24 * 3600; % datenum -> seconds elapsed
-    else
-        timeVec = timeVecFile - timeVecFile(1);
-    end
+%% Build exposure-separated results
+if isfield(info,'exposureMode') && ~isempty(info.exposureMode)
+    results.exposureMode = char(info.exposureMode);
+elseif isMultipleExposure
+    results.exposureMode = 'sequencer';
 else
-    timeVec = (0:(nOfFrames-1))'*(1/frameRate);   % fallback when timestamps are unavailable
+    results.exposureMode = 'fixed';
 end
-p2p_time = timeVec<timePeriodForP2P; %#ok<NASGU>
+results.exposureSequenceUs = exposureSequenceUs;
+results.timeAxisSource = info.timeAxisSource;
+results.unusedExposureSequenceUs = exposureGroupDetails.unusedSequenceUs;
+results.darkCalibration = darkCalibrationInfo;
+results.byExposure = struct([]);
 
-% Calculate BFI for all channels
-BFi = cell(1,nOfChannels);
-BFI_matrix = zeros(nOfFrames,nOfChannels);
-meanI_matrix = zeros(nOfFrames,nOfChannels);
-for ch = 1:nOfChannels
-    BFi{ch} = 1./corrSpeckleContrast{ch};
-    BFI_matrix(:,ch) = BFi{ch};
-    meanI_matrix(:,ch) = meanVec{ch};
+for exposureIdx = 1:nExposureGroups
+    indices = exposureSeries(exposureIdx).frameIndices;
+    exposureTimeVec = allTimeVec(indices);
+    corrMatrix = exposureSeries(exposureIdx).corrSpeckleContrast;
+    bfiMatrix = 1 ./ corrMatrix;
+    rbfiMatrix = localCalculateRelativeBFI(bfiMatrix,exposureTimeVec);
+
+    actualExposureUs = [];
+    if ~isempty(perFrameExposureUs)
+        actualExposureUs = double(perFrameExposureUs(indices));
+        actualExposureUs = actualExposureUs(:);
+    elseif isfinite(exposureGroupValuesUs(exposureIdx))
+        actualExposureUs = repmat(exposureGroupValuesUs(exposureIdx),numel(indices),1);
+    end
+
+    exposureResult = struct();
+    exposureResult.exposureTimeUs = exposureGroupDetails.actualMedianUs(exposureIdx);
+    exposureResult.requestedExposureTimeUs = exposureGroupValuesUs(exposureIdx);
+    exposureResult.actualExposureTimesUs = actualExposureUs;
+    exposureResult.frameIndices = indices;
+    exposureResult.sequencerSetIds = sequencerSetIds(indices);
+    if all(isnan(exposureResult.sequencerSetIds))
+        exposureResult.sequencerSetIds = [];
+    end
+    exposureResult.timeVec = exposureTimeVec;
+    exposureResult.rawSpeckleContrast = exposureSeries(exposureIdx).rawSpeckleContrast;
+    exposureResult.corrSpeckleContrast = corrMatrix;
+    exposureResult.BFI = bfiMatrix;
+    exposureResult.rBFI = rbfiMatrix;
+    exposureResult.meanIntensity = exposureSeries(exposureIdx).meanIntensity;
+    exposureResult.frameNames = exposureSeries(exposureIdx).frameNames;
+    if numel(exposureTimeVec) > 1 && median(diff(exposureTimeVec)) > 0
+        exposureResult.effectiveFrameRateHz = 1 / median(diff(exposureTimeVec));
+    else
+        exposureResult.effectiveFrameRateHz = NaN;
+    end
+    results.byExposure(exposureIdx) = exposureResult;
+end
+
+if ~isMultipleExposure
+    timeVec = results.byExposure(1).timeVec;
+    rawSpeckleContrast = localMatrixColumnsToCells(results.byExposure(1).rawSpeckleContrast);
+    corrSpeckleContrast = localMatrixColumnsToCells(results.byExposure(1).corrSpeckleContrast);
+    meanVec = localMatrixColumnsToCells(results.byExposure(1).meanIntensity);
+    BFI_matrix = results.byExposure(1).BFI;
+    meanI_matrix = results.byExposure(1).meanIntensity;
+    BFi = localMatrixColumnsToCells(BFI_matrix);
+    p2p_time = timeVec<timePeriodForP2P; %#ok<NASGU>
+else
+    % The legacy outputs cannot represent multiple exposure-specific clocks
+    % without interleaving incompatible conditions. Use results.byExposure.
+    timeVec = [];
+    rawSpeckleContrast = {};
+    corrSpeckleContrast = {};
+    meanVec = {};
+    BFI_matrix = [];
+    meanI_matrix = [];
+    BFi = {};
+    warning('SCOSvsTime:MultipleExposureResults', ...
+        ['Multiple exposure conditions were analyzed separately. Legacy time-series ' ...
+         'outputs are empty; use results.byExposure.']);
 end
 
 %% Save
@@ -496,103 +506,567 @@ if isempty(startDateTime)
     startDateTime = datestr(now);
 end
 
-save([recSavePrefix 'Local' stdStr '_corr.mat'], ...
-    'startDateTime','timeVec', 'corrSpeckleContrast' , 'rawSpeckleContrast', ...
-    'meanVec', 'info','nOfChannels', 'recName','windowSize','timeVecFile','frameNames');
-
-BFI_output = struct('timeVec',timeVec,'BFI',BFI_matrix,'meanI',meanI_matrix,'channels',channels);
-save([recSavePrefix 'BFI_output.mat'],'-struct','BFI_output');
-
-for ch = 1:nOfChannels
-    singleBFI.timeVec = timeVec;
-    singleBFI.BFI = BFI_matrix(:,ch);
-    singleBFI.meanI = meanI_matrix(:,ch);
-    save([recSavePrefix sprintf('BFI_Ch%d.mat',ch)],'-struct','singleBFI');
+if ~exist('channels','var')
+    channels = struct('Centers',[],'Radii',[]);
 end
+results.channels = channels;
 
-%% Plot
-infoFields = fieldnames(info.name);
-if ~isfield(info.name,'Gain')
-    info.name.Gain = '';
-end
-firtsParamValue = info.name.(infoFields{1});
-if ~ischar(firtsParamValue)
-    firtsParamValue = num2str(firtsParamValue);
-end
+if ~isMultipleExposure
+    % Preserve all legacy variables and file names for fixed/single-condition
+    % recordings. The additional results variable is backward compatible.
+    save([recSavePrefix 'Local' stdStr '_corr.mat'], ...
+        'startDateTime','timeVec', 'corrSpeckleContrast' , 'rawSpeckleContrast', ...
+        'meanVec', 'info','nOfChannels', 'recName','windowSize','timeVecFile', ...
+        'frameNames','results');
 
-if isfield(info.name,'SDS')
-    titleStr =  [ infoFields{1} firtsParamValue ' SDS=' num2str(info.name.SDS)  '; exp=' num2str(info.name.expT)  'ms; Gain='  num2str(info.name.Gain) 'dB' ];
+    BFI_output = struct('timeVec',timeVec,'BFI',BFI_matrix,'meanI',meanI_matrix, ...
+        'channels',channels,'results',results);
+    save([recSavePrefix 'BFI_output.mat'],'-struct','BFI_output');
+
+    for ch = 1:nOfChannels
+        singleBFI = struct();
+        singleBFI.timeVec = timeVec;
+        singleBFI.BFI = BFI_matrix(:,ch);
+        singleBFI.meanI = meanI_matrix(:,ch);
+        singleBFI.results = localSelectResultChannel(results,ch);
+        save([recSavePrefix sprintf('BFI_Ch%d.mat',ch)],'-struct','singleBFI');
+    end
 else
-    titleStr =  [ infoFields{1} firtsParamValue '; exp=' num2str(info.name.expT)  'ms; Gain='  num2str(info.name.Gain) 'dB' ];
+    % An interleaved legacy matrix would invite invalid cross-exposure
+    % analysis. Multi-exposure MAT files expose results.byExposure only.
+    save([recSavePrefix 'Local' stdStr '_corr.mat'], ...
+        'startDateTime','results','info','nOfChannels','recName','windowSize', ...
+        'timeVecFile','frameNames');
+    BFI_output = struct('results',results,'channels',channels);
+    save([recSavePrefix 'BFI_output.mat'],'-struct','BFI_output');
+    for ch = 1:nOfChannels
+        singleBFI = struct('results',localSelectResultChannel(results,ch));
+        save([recSavePrefix sprintf('BFI_Ch%d.mat',ch)],'-struct','singleBFI');
+    end
 end
 
-Nx = 3;
+%% Plot exposure-separated results
 if plotFlag
-    fig_raw = figure('name',['SCOS Raw ' recName],'Units','Normalized','Position',[0.01,1-0.16-nOfChannels*0.15,0.9,0.05+nOfChannels*0.15]);
-    for ch = 1:nOfChannels
-        try
-            [raw_SNR,raw_FFT,raw_freq,raw_pulseFreq,raw_pulseBPM] = CalcSNR_Pulse(rawSpeckleContrast{ch},frameRate,false); %#ok<NASGU,ASGLU>
-        catch err
-            warning(err.message);
-        end
-        subplot(nOfChannels,Nx,Nx*(ch-1)+1);
-            plot(timeVec,meanVec{ch});
-            title(sprintf('Ch%d - mean I',ch));
-            xlim([0 timeVec(end)]); xlabel('Time [s]');
-        subplot(nOfChannels,Nx,Nx*(ch-1)+2);
-            plot(timeVec,rawSpeckleContrast{ch});
-            title(sprintf('Ch%d - Raw',ch)); xlabel('Time [s]');
-        subplot(nOfChannels,Nx,Nx*(ch-1)+3);
-            plot(raw_freq,raw_FFT); title(sprintf('FFT: SNR=%.2g',raw_SNR)); xlabel('Frequency [Hz]');
-    end
-    savefig(fig_raw,[recSavePrefix 'Local' stdStr '_plot.fig']);
-
-    fig_corr = figure('name',['SCOS Corr ' recName],'Units','Normalized','Position',[0.01,1-0.16-nOfChannels*0.15,0.9,0.05+nOfChannels*0.15]);
-    for ch = 1:nOfChannels
-        try
-            [corr_SNR,corr_FFT,corr_freq,corr_pulseFreq,corr_pulseBPM] = CalcSNR_Pulse(corrSpeckleContrast{ch},frameRate,false); %#ok<NASGU,ASGLU>
-        catch err
-            warning(err.message);
-        end
-        subplot(nOfChannels,Nx,Nx*(ch-1)+1);
-            plot(timeVec,meanVec{ch});
-            title(sprintf('Ch%d - mean I',ch));
-            xlim([0 timeVec(end)]); xlabel('Time [s]');
-        subplot(nOfChannels,Nx,Nx*(ch-1)+2);
-            plot(timeVec,corrSpeckleContrast{ch});
-            title(sprintf('Ch%d - Corr',ch)); xlabel('Time [s]');
-        subplot(nOfChannels,Nx,Nx*(ch-1)+3);
-            plot(corr_freq,corr_FFT); title(sprintf('FFT: SNR=%.2g',corr_SNR)); xlabel('Frequency [Hz]');
-    end
-    savefig(fig_corr,[recSavePrefix 'Local' stdStr '_plot_corrected.fig']);
-end
-
-%% Plot rBFI
-for ch = 1:nOfChannels
-    if any(corrSpeckleContrast{ch} < 0)
-        warning('Error: There are negative values in the contrast !!!');
-    end
-end
-
-if plotFlag
-    for ch = 1:nOfChannels
-        BFi_ch = BFi{ch};
-        if timeVec(end) > 120
-            timeToPlot = timeVec / 60; xLabelStr = 'time [min]';
-            rBFi = BFi_ch/mean(BFi_ch(1:round(10*frameRate)));
-        else
-            timeToPlot = timeVec; xLabelStr = 'time [sec]';
-            rBFi = BFi_ch/prctile(BFi_ch(1:round(10*frameRate)),5);
-        end
-        fig_r = figure('Name',sprintf('rBFi Ch%d: %s',ch,recName),'Units','Normalized','Position',[0.1,0.1,0.4,0.4]);
-        subplot(2,1,1);
-            plot(timeToPlot,rBFi); xlabel(xLabelStr); ylabel('rBFi'); title(titleStr); grid on;
-        subplot(2,1,2);
-            plot(timeToPlot,meanVec{ch}); xlabel(xLabelStr); ylabel('<I> [DU]'); grid on;
-        savefig(fig_r,[recSavePrefix sprintf('_rBFi_Ch%d.fig',ch)]);
-    end
+    localPlotExposureResults(results,recName,recSavePrefix,stdStr,isMultipleExposure);
 end
 
 %%
 toc(start_scos)
+end
+
+function [backgroundByExposure, darkVarByExposure, calibrationInfo] = ...
+        localLoadDarkCorrections(backgroundName,infoBackground,meanFrame,recName, ...
+            exposureGroupValuesUs,nExposureGroups)
+% Dark data recorded at several exposures are never averaged together.
+% If only one Dark condition (or an old Dark recording without exposure
+% metadata) exists, it is reused deliberately and recorded as a limitation.
+
+requiredBackgroundFrames = 400;
+backgroundByExposure = cell(1,nExposureGroups);
+darkVarByExposure = cell(1,nExposureGroups);
+calibrationInfo = repmat(struct('sourceExposureTimeUs',NaN, ...
+    'sharedAcrossExposure',false,'frameCount',0,'source',backgroundName),1,nExposureGroups);
+
+isNpyBackground = exist(backgroundName,'dir') == 7 && ...
+    (exist(fullfile(backgroundName,'frames.npy'),'file') == 2 || ...
+     ~isempty(dir(fullfile(backgroundName,'frames_*.npy'))));
+
+if isNpyBackground
+    [~,backgroundInfo,backgroundSourceFiles] = LoadNpyRecordingMeta(backgroundName);
+    backgroundExposureTimesUs = [];
+    if isfield(backgroundInfo,'exposureTimesUs')
+        backgroundExposureTimesUs = backgroundInfo.exposureTimesUs;
+    end
+    backgroundSequenceUs = [];
+    if isfield(backgroundInfo,'exposureSequenceUs')
+        backgroundSequenceUs = backgroundInfo.exposureSequenceUs;
+    elseif isfield(backgroundInfo,'name') && isfield(backgroundInfo.name,'expT') && ...
+            isnumeric(backgroundInfo.name.expT) && isscalar(backgroundInfo.name.expT) && ...
+            isfinite(backgroundInfo.name.expT)
+        backgroundSequenceUs = double(backgroundInfo.name.expT) * 1000;
+    end
+    [backgroundGroups,backgroundGroupValuesUs,backgroundGroupDetails] = ...
+        GroupExposureFrames(backgroundExposureTimesUs,backgroundSequenceUs, ...
+            backgroundSourceFiles.totalFrames);
+
+    backgroundBlackLevel = localInfoBlackLevel(backgroundInfo);
+    if numel(backgroundGroupValuesUs) == 1
+        indices = find(backgroundGroups == 1);
+        [sharedBackground,sharedDarkVar] = localReadNpyDarkStatistics( ...
+            backgroundName,backgroundSourceFiles,indices,requiredBackgroundFrames, ...
+            backgroundBlackLevel);
+        [sharedBackground,sharedDarkVar] = localAlignDarkSize( ...
+            sharedBackground,sharedDarkVar,meanFrame,recName);
+        for exposureIdx = 1:nExposureGroups
+            backgroundByExposure{exposureIdx} = sharedBackground;
+            darkVarByExposure{exposureIdx} = sharedDarkVar;
+            calibrationInfo(exposureIdx).sourceExposureTimeUs = ...
+                backgroundGroupDetails.actualMedianUs(1);
+            calibrationInfo(exposureIdx).sharedAcrossExposure = nExposureGroups > 1;
+            calibrationInfo(exposureIdx).frameCount = requiredBackgroundFrames;
+        end
+        if nExposureGroups > 1
+            localWarnSharedDarkCorrection();
+        end
+        return;
+    end
+
+    for exposureIdx = 1:nExposureGroups
+        matchingBackgroundGroup = localFindExposureMatch( ...
+            exposureGroupValuesUs(exposureIdx),backgroundGroupValuesUs);
+        if isempty(matchingBackgroundGroup)
+            error('SCOSvsTime:MissingDarkExposure', ...
+                ['Dark recording has no condition matching exposure %.12g us. ' ...
+                 'Different Dark exposures will not be averaged as a fallback.'], ...
+                exposureGroupValuesUs(exposureIdx));
+        end
+        indices = find(backgroundGroups == matchingBackgroundGroup);
+        [background,darkVar] = localReadNpyDarkStatistics( ...
+            backgroundName,backgroundSourceFiles,indices,requiredBackgroundFrames, ...
+            backgroundBlackLevel);
+        [background,darkVar] = localAlignDarkSize(background,darkVar,meanFrame,recName);
+        backgroundByExposure{exposureIdx} = background;
+        darkVarByExposure{exposureIdx} = darkVar;
+        calibrationInfo(exposureIdx).sourceExposureTimeUs = ...
+            backgroundGroupDetails.actualMedianUs(matchingBackgroundGroup);
+        calibrationInfo(exposureIdx).frameCount = requiredBackgroundFrames;
+    end
+    return;
+end
+
+% Legacy TIFF/AVI/MAT Dark recordings do not carry per-frame exposure data.
+% Preserve their established loading path, then reuse the one correction for
+% every exposure with an explicit warning and metadata flag.
+[background,darkVar,nBackgroundFrames] = localLoadLegacyDark( ...
+    backgroundName,infoBackground,requiredBackgroundFrames);
+[background,darkVar] = localAlignDarkSize(background,darkVar,meanFrame,recName);
+for exposureIdx = 1:nExposureGroups
+    backgroundByExposure{exposureIdx} = background;
+    darkVarByExposure{exposureIdx} = darkVar;
+    calibrationInfo(exposureIdx).sharedAcrossExposure = nExposureGroups > 1;
+    calibrationInfo(exposureIdx).frameCount = nBackgroundFrames;
+end
+if nExposureGroups > 1
+    localWarnSharedDarkCorrection();
+end
+end
+
+function [background,darkVar] = localReadNpyDarkStatistics( ...
+        backgroundName,sourceFiles,indices,requiredFrames,blackLevel)
+if numel(indices) < requiredFrames
+    error('SCOSvsTime:NotEnoughDarkFrames', ...
+        'Dark exposure condition requires %d frames, but only %d were captured.', ...
+        requiredFrames,numel(indices));
+end
+selected = indices(1:requiredFrames);
+darkRecord = zeros([sourceFiles.imageSize requiredFrames]);
+for frameIdx = 1:requiredFrames
+    darkRecord(:,:,frameIdx) = double(LoadNpyRecordingFrame( ...
+        backgroundName,selected(frameIdx),sourceFiles));
+end
+background = mean(darkRecord,3) - blackLevel;
+darkVar = std(darkRecord,0,3).^2;
+end
+
+function [background,darkVar,nBackgroundFrames] = localLoadLegacyDark( ...
+        backgroundName,infoBackground,requiredFrames)
+blackLevel = localInfoBlackLevel(infoBackground);
+if exist(backgroundName,'dir') == 7
+    meanPath = fullfile(backgroundName,'meanIm.mat');
+    if exist(meanPath,'file') == 2
+        backgroundStruct = load(meanPath);
+        if isfield(backgroundStruct,'nOfFrames')
+            nBackgroundFrames = backgroundStruct.nOfFrames;
+        else
+            nBackgroundFrames = GetNumOfFrames(backgroundName);
+        end
+        if nBackgroundFrames < requiredFrames
+            error('SCOSvsTime:NotEnoughDarkFrames', ...
+                'Not enough Dark frames. Required %d, found %d.',requiredFrames,nBackgroundFrames);
+        end
+        if isfield(backgroundStruct,'recMean') && isfield(backgroundStruct,'recVar')
+            background = backgroundStruct.recMean - blackLevel;
+            darkVar = backgroundStruct.recVar;
+        else
+            [background,darkVar] = ReadRecordVarAndMean(backgroundName);
+            background = background - blackLevel;
+        end
+    else
+        nBackgroundFrames = GetNumOfFrames(backgroundName);
+        if nBackgroundFrames < requiredFrames
+            error('SCOSvsTime:NotEnoughDarkFrames', ...
+                'Not enough Dark frames. Required %d, found %d.',requiredFrames,nBackgroundFrames);
+        end
+        [background,darkVar] = ReadRecordVarAndMean(backgroundName);
+        background = background - blackLevel;
+    end
+elseif endsWith(lower(backgroundName),'.mat')
+    backgroundStruct = load(backgroundName);
+    names = fieldnames(backgroundStruct);
+    if isfield(backgroundStruct,'recMean') && isfield(backgroundStruct,'recVar')
+        background = backgroundStruct.recMean - blackLevel;
+        darkVar = backgroundStruct.recVar;
+        nBackgroundFrames = requiredFrames;
+    else
+        videoField = find(startsWith(names,'Video'),1,'first');
+        if isempty(videoField)
+            error('SCOSvsTime:InvalidDarkMat', ...
+                'Dark MAT file must contain recMean/recVar or a Video* array.');
+        end
+        darkRecord = double(backgroundStruct.(names{videoField}));
+        nBackgroundFrames = size(darkRecord,3);
+        if nBackgroundFrames < requiredFrames
+            error('SCOSvsTime:NotEnoughDarkFrames', ...
+                'Not enough Dark frames. Required %d, found %d.',requiredFrames,nBackgroundFrames);
+        end
+        background = mean(darkRecord,3) - blackLevel;
+        darkVar = std(darkRecord,0,3).^2;
+    end
+else
+    error('SCOSvsTime:InvalidDarkPath','Unsupported Dark recording: %s',backgroundName);
+end
+
+if abs(mean(background(:),'omitnan')) > 3
+    warning('SCOSvsTime:SuspiciousDarkLevel', ...
+        'Suspicious mean Dark background level %.3g DU.',mean(background(:),'omitnan'));
+end
+end
+
+function [background,darkVar] = localAlignDarkSize(background,darkVar,meanFrame,recName)
+if isequal(size(background),size(meanFrame)) && isequal(size(darkVar),size(meanFrame))
+    return;
+end
+
+roiPath = fullfile(recName,'ROI.mat');
+if exist(roiPath,'file') == 2
+    roiStruct = load(roiPath);
+    if isfield(roiStruct,'xLimits') && isfield(roiStruct,'yLimits') && ...
+            roiStruct.xLimits(1) >= 1 && roiStruct.yLimits(1) >= 1 && ...
+            roiStruct.xLimits(end) <= size(background,2) && ...
+            roiStruct.yLimits(end) <= size(background,1)
+        background = background(roiStruct.yLimits(1):roiStruct.yLimits(2), ...
+            roiStruct.xLimits(1):roiStruct.xLimits(2));
+        darkVar = darkVar(roiStruct.yLimits(1):roiStruct.yLimits(2), ...
+            roiStruct.xLimits(1):roiStruct.xLimits(2));
+    end
+end
+
+if ~isequal(size(background),size(meanFrame)) || ~isequal(size(darkVar),size(meanFrame))
+    error('SCOSvsTime:DarkImageSize', ...
+        'Dark image size [%s] does not match recording image size [%s].', ...
+        num2str(size(background)),num2str(size(meanFrame)));
+end
+end
+
+function blackLevel = localInfoBlackLevel(info)
+blackLevel = 0;
+if isfield(info,'name') && isfield(info.name,'BL') && isnumeric(info.name.BL) && ...
+        isscalar(info.name.BL) && isfinite(info.name.BL)
+    blackLevel = double(info.name.BL);
+end
+end
+
+function localWarnSharedDarkCorrection()
+warning('SCOSvsTime:SharedDarkCorrection', ...
+    ['A single Dark/noise correction is being reused for multiple exposure ' ...
+     'conditions. Intensity and noise depend on exposure time; rigorous ' ...
+     'comparison requires Dark data acquired separately at each exposure.']);
+end
+
+function matchingGroup = localFindExposureMatch(value,candidates)
+matchingGroup = [];
+if ~isfinite(value) || isempty(candidates)
+    return;
+end
+try
+    [groupIndex,~,details] = GroupExposureFrames(value,candidates,1);
+    matchingGroup = find(details.sequenceToGroup == groupIndex(1),1,'first');
+catch err
+    if ~strcmp(err.identifier,'GroupExposureFrames:UnmatchedExposure')
+        rethrow(err);
+    end
+end
+end
+
+function spatialCalibration = localBuildSpatialCorrections(recName,sourceFiles, ...
+        exposureGroupIndex,exposureGroupValuesUs,backgroundByExposure, ...
+        blackLevel,totMask,windowSize,plotFlag)
+% Spatial coefficients are estimated independently for every applied
+% exposure. Averaging alternating exposures here would mix both intensity
+% and exposure-dependent noise before SCOS is calculated.
+
+nExposureGroups = numel(exposureGroupValuesUs);
+if nExposureGroups == 1
+    cachePath = fullfile(recName,'smoothingCoefficients.mat');
+    if exist(cachePath,'file') == 2
+        cached = load(cachePath);
+        requiredFields = {'spVar','fitI_A','fitI_B','spIm'};
+        if all(isfield(cached,requiredFields)) && ...
+                isequal(size(cached.spVar),sourceFiles.imageSize)
+            disp('Load Spatial Noise and Smoothing Coefficients');
+            spatialCalibration = struct('exposureTimeUs',exposureGroupValuesUs(1), ...
+                'spVar',cached.spVar,'fitI_A',cached.fitI_A, ...
+                'fitI_B',cached.fitI_B,'spIm',cached.spIm,'frameCount',NaN);
+            return;
+        end
+    end
+else
+    cachePath = fullfile(recName,'smoothingCoefficientsByExposure.mat');
+    if exist(cachePath,'file') == 2
+        cached = load(cachePath);
+        if isfield(cached,'spatialCalibration') && ...
+                isfield(cached,'savedWindowSize') && cached.savedWindowSize == windowSize && ...
+                isfield(cached,'savedMask') && isequal(cached.savedMask,totMask) && ...
+                isfield(cached,'savedExposureValuesUs') && ...
+                numel(cached.savedExposureValuesUs) == nExposureGroups && ...
+                all(arrayfun(@(idx) ~isempty(localFindExposureMatch( ...
+                    exposureGroupValuesUs(idx),cached.savedExposureValuesUs)),1:nExposureGroups))
+            disp('Load exposure-specific Spatial Noise and Smoothing Coefficients');
+            spatialCalibration = cached.spatialCalibration;
+            return;
+        end
+    end
+end
+
+disp('Calc exposure-specific Spatial Noise and Smoothing Coefficients');
+spatialCalibration = repmat(struct(),1,nExposureGroups);
+for exposureIdx = 1:nExposureGroups
+    availableIndices = find(exposureGroupIndex == exposureIdx);
+    desiredFrames = 600;
+    if numel(availableIndices) > 1000
+        desiredFrames = 1000;
+    end
+    nSpatialFrames = min(desiredFrames,numel(availableIndices));
+    if nSpatialFrames < 2
+        error('SCOSvsTime:NotEnoughSpatialFrames', ...
+            'Exposure %.12g us requires at least two frames for spatial calibration.', ...
+            exposureGroupValuesUs(exposureIdx));
+    end
+    if nSpatialFrames < desiredFrames
+        warning('SCOSvsTime:FewSpatialFrames', ...
+            'Exposure %.12g us uses only %d frames for spatial calibration.', ...
+            exposureGroupValuesUs(exposureIdx),nSpatialFrames);
+    end
+
+    selected = availableIndices(1:nSpatialFrames);
+    spatialRecord = zeros([sourceFiles.imageSize nSpatialFrames]);
+    for frameIdx = 1:nSpatialFrames
+        spatialRecord(:,:,frameIdx) = double(LoadNpyRecordingFrame( ...
+            recName,selected(frameIdx),sourceFiles));
+    end
+    spatialRecord = spatialRecord - blackLevel;
+    spatialImage = mean(spatialRecord,3) - backgroundByExposure{exposureIdx};
+    spatialVariance = stdfilt(spatialImage,true(windowSize)).^2;
+    [fitI_A,fitI_B] = FitMeanIm(spatialRecord,totMask,windowSize);
+
+    spatialCalibration(exposureIdx).exposureTimeUs = exposureGroupValuesUs(exposureIdx);
+    spatialCalibration(exposureIdx).spVar = spatialVariance;
+    spatialCalibration(exposureIdx).fitI_A = fitI_A;
+    spatialCalibration(exposureIdx).fitI_B = fitI_B;
+    spatialCalibration(exposureIdx).spIm = spatialImage;
+    spatialCalibration(exposureIdx).frameCount = nSpatialFrames;
+
+    if plotFlag
+        spatialFigure = my_imagesc(spatialImage);
+        title(sprintf('Image average: %d frames, exposure %.12g us', ...
+            nSpatialFrames,exposureGroupValuesUs(exposureIdx)));
+        if nExposureGroups == 1
+            figureName = 'spIm.fig';
+        else
+            figureName = sprintf('spIm_exp%sus.fig', ...
+                localExposureFileLabel(exposureGroupValuesUs(exposureIdx)));
+        end
+        savefig(spatialFigure,fullfile(recName,figureName));
+    end
+end
+
+if nExposureGroups == 1
+    spVar = spatialCalibration.spVar; %#ok<NASGU>
+    fitI_A = spatialCalibration.fitI_A; %#ok<NASGU>
+    fitI_B = spatialCalibration.fitI_B; %#ok<NASGU>
+    spIm = spatialCalibration.spIm; %#ok<NASGU>
+    save(cachePath,'spVar','fitI_A','fitI_B','spIm','totMask');
+else
+    savedWindowSize = windowSize; %#ok<NASGU>
+    savedMask = totMask; %#ok<NASGU>
+    savedExposureValuesUs = exposureGroupValuesUs; %#ok<NASGU>
+    save(cachePath,'spatialCalibration','savedWindowSize','savedMask', ...
+        'savedExposureValuesUs');
+end
+end
+
+function [rawRow,corrRow,meanRow] = localCalculateScosFrame(rawFrame,divideBy, ...
+        blackLevel,calibration,roi,masksCut,windowSize,actualGain)
+% One shared SCOS implementation is used for fixed and every sequencer
+% exposure condition. Only the selected correction structure differs.
+image = double(rawFrame) ./ divideBy - blackLevel - calibration.background;
+imageCut = image(roi.y,roi.x);
+localVariance = stdfilt(imageCut,true(windowSize)).^2;
+nChannels = numel(masksCut);
+rawRow = nan(1,nChannels);
+corrRow = nan(1,nChannels);
+meanRow = nan(1,nChannels);
+
+for channelIdx = 1:nChannels
+    mask = masksCut{channelIdx};
+    meanIntensity = mean(imageCut(mask));
+    fittedIntensity = calibration.fitI_A_cut .* meanIntensity + calibration.fitI_B_cut;
+    fittedIntensitySquared = fittedIntensity.^2;
+    rawRow(channelIdx) = mean(localVariance(mask) ./ fittedIntensitySquared(mask));
+    correctedNumerator = localVariance - actualGain .* fittedIntensity - ...
+        calibration.spVar_cut - 1/12 - calibration.darkVarPerWindow_cut;
+    corrRow(channelIdx) = mean(correctedNumerator(mask) ./ fittedIntensitySquared(mask));
+    meanRow(channelIdx) = meanIntensity;
+end
+end
+
+function relativeBFI = localCalculateRelativeBFI(bfi,timeVec)
+relativeBFI = nan(size(bfi));
+if isempty(bfi)
+    return;
+end
+baselineMask = timeVec <= timeVec(1) + 10;
+if ~any(baselineMask)
+    baselineMask(1) = true;
+end
+longRecording = timeVec(end) - timeVec(1) > 120;
+for channelIdx = 1:size(bfi,2)
+    baselineValues = bfi(baselineMask,channelIdx);
+    baselineValues = baselineValues(isfinite(baselineValues));
+    if isempty(baselineValues)
+        continue;
+    end
+    if longRecording
+        reference = mean(baselineValues);
+    else
+        reference = prctile(baselineValues,5);
+    end
+    if isfinite(reference) && reference ~= 0
+        relativeBFI(:,channelIdx) = bfi(:,channelIdx) ./ reference;
+    end
+end
+end
+
+function cells = localMatrixColumnsToCells(matrix)
+cells = cell(1,size(matrix,2));
+for columnIdx = 1:size(matrix,2)
+    cells{columnIdx} = matrix(:,columnIdx);
+end
+end
+
+function selected = localSelectResultChannel(results,channelIdx)
+selected = results;
+for exposureIdx = 1:numel(selected.byExposure)
+    selected.byExposure(exposureIdx).rawSpeckleContrast = ...
+        selected.byExposure(exposureIdx).rawSpeckleContrast(:,channelIdx);
+    selected.byExposure(exposureIdx).corrSpeckleContrast = ...
+        selected.byExposure(exposureIdx).corrSpeckleContrast(:,channelIdx);
+    selected.byExposure(exposureIdx).BFI = ...
+        selected.byExposure(exposureIdx).BFI(:,channelIdx);
+    selected.byExposure(exposureIdx).rBFI = ...
+        selected.byExposure(exposureIdx).rBFI(:,channelIdx);
+    selected.byExposure(exposureIdx).meanIntensity = ...
+        selected.byExposure(exposureIdx).meanIntensity(:,channelIdx);
+end
+end
+
+function localPlotExposureResults(results,recName,recSavePrefix,stdStr,isMultipleExposure)
+nChannels = size(results.byExposure(1).meanIntensity,2);
+for exposureIdx = 1:numel(results.byExposure)
+    exposureResult = results.byExposure(exposureIdx);
+    exposureLabel = localExposureFileLabel(exposureResult.exposureTimeUs);
+    if isMultipleExposure
+        fileSuffix = ['_exp' exposureLabel 'us'];
+    else
+        fileSuffix = '';
+    end
+    figureTitle = sprintf('%s; exposure %.12g us',recName,exposureResult.exposureTimeUs);
+    nColumns = 3;
+
+    rawFigure = figure('Name',['SCOS Raw ' figureTitle], ...
+        'Units','Normalized','Position',[0.01,1-0.16-nChannels*0.15,0.9,0.05+nChannels*0.15]);
+    correctedFigure = figure('Name',['SCOS Corr ' figureTitle], ...
+        'Units','Normalized','Position',[0.01,1-0.16-nChannels*0.15,0.9,0.05+nChannels*0.15]);
+
+    for channelIdx = 1:nChannels
+        rawSNR = NaN; rawFFT = []; rawFrequency = [];
+        corrSNR = NaN; corrFFT = []; corrFrequency = [];
+        if numel(exposureResult.timeVec) >= 3 && ...
+                isfinite(exposureResult.effectiveFrameRateHz) && ...
+                exposureResult.effectiveFrameRateHz > 0
+            try
+                [rawSNR,rawFFT,rawFrequency] = CalcSNR_Pulse( ...
+                    exposureResult.rawSpeckleContrast(:,channelIdx), ...
+                    exposureResult.effectiveFrameRateHz,false);
+                [corrSNR,corrFFT,corrFrequency] = CalcSNR_Pulse( ...
+                    exposureResult.corrSpeckleContrast(:,channelIdx), ...
+                    exposureResult.effectiveFrameRateHz,false);
+            catch err
+                warning('SCOSvsTime:ExposureFFT','Exposure %.12g us FFT skipped: %s', ...
+                    exposureResult.exposureTimeUs,err.message);
+            end
+        end
+
+        figure(rawFigure);
+        subplot(nChannels,nColumns,nColumns*(channelIdx-1)+1);
+        plot(exposureResult.timeVec,exposureResult.meanIntensity(:,channelIdx));
+        title(sprintf('Ch%d - mean I',channelIdx)); xlabel('Time [s]');
+        subplot(nChannels,nColumns,nColumns*(channelIdx-1)+2);
+        plot(exposureResult.timeVec,exposureResult.rawSpeckleContrast(:,channelIdx));
+        title(sprintf('Ch%d - Raw',channelIdx)); xlabel('Time [s]');
+        subplot(nChannels,nColumns,nColumns*(channelIdx-1)+3);
+        if isempty(rawFrequency)
+            axis off; text(0.1,0.5,'FFT unavailable');
+        else
+            plot(rawFrequency,rawFFT); title(sprintf('FFT: SNR=%.2g',rawSNR)); xlabel('Frequency [Hz]');
+        end
+
+        figure(correctedFigure);
+        subplot(nChannels,nColumns,nColumns*(channelIdx-1)+1);
+        plot(exposureResult.timeVec,exposureResult.meanIntensity(:,channelIdx));
+        title(sprintf('Ch%d - mean I',channelIdx)); xlabel('Time [s]');
+        subplot(nChannels,nColumns,nColumns*(channelIdx-1)+2);
+        plot(exposureResult.timeVec,exposureResult.corrSpeckleContrast(:,channelIdx));
+        title(sprintf('Ch%d - Corr',channelIdx)); xlabel('Time [s]');
+        subplot(nChannels,nColumns,nColumns*(channelIdx-1)+3);
+        if isempty(corrFrequency)
+            axis off; text(0.1,0.5,'FFT unavailable');
+        else
+            plot(corrFrequency,corrFFT); title(sprintf('FFT: SNR=%.2g',corrSNR)); xlabel('Frequency [Hz]');
+        end
+
+        if any(exposureResult.corrSpeckleContrast(:,channelIdx) < 0)
+            warning('SCOSvsTime:NegativeContrast', ...
+                'Exposure %.12g us channel %d contains negative corrected contrast.', ...
+                exposureResult.exposureTimeUs,channelIdx);
+        end
+
+        if exposureResult.timeVec(end) > 120
+            timeToPlot = exposureResult.timeVec / 60;
+            xLabel = 'time [min]';
+        else
+            timeToPlot = exposureResult.timeVec;
+            xLabel = 'time [sec]';
+        end
+        relativeFigure = figure('Name',sprintf('rBFI Ch%d: %s',channelIdx,figureTitle), ...
+            'Units','Normalized','Position',[0.1,0.1,0.4,0.4]);
+        subplot(2,1,1);
+        plot(timeToPlot,exposureResult.rBFI(:,channelIdx));
+        xlabel(xLabel); ylabel('rBFI'); title(figureTitle,'Interpreter','none'); grid on;
+        subplot(2,1,2);
+        plot(timeToPlot,exposureResult.meanIntensity(:,channelIdx));
+        xlabel(xLabel); ylabel('<I> [DU]'); grid on;
+        savefig(relativeFigure,[recSavePrefix sprintf('_rBFi_Ch%d%s.fig',channelIdx,fileSuffix)]);
+    end
+    savefig(rawFigure,[recSavePrefix 'Local' stdStr '_plot' fileSuffix '.fig']);
+    savefig(correctedFigure,[recSavePrefix 'Local' stdStr '_plot_corrected' fileSuffix '.fig']);
+end
+end
+
+function label = localExposureFileLabel(exposureTimeUs)
+if ~isfinite(exposureTimeUs)
+    label = 'unknown';
+else
+    label = regexprep(sprintf('%.12g',exposureTimeUs),'[^0-9A-Za-z]','p');
+end
 end

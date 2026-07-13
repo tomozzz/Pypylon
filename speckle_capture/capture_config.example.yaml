@@ -4,6 +4,8 @@
 # - trigger_delay: microseconds (camera dependent)
 # - acquisition_frame_rate: frames/sec
 # - measurement_duration_s: seconds
+# - exposure_times_us: microseconds (each item)
+# - progress_interval_s: seconds
 
 output_dir: "./data/speckle_run"
 camera_index: 0
@@ -16,8 +18,11 @@ timeout_ms: 5000
 frame_count: null
 measurement_duration_s: 10.0
 
-# Optional: split frame output into multiple .npy files to reduce peak memory usage
-# frames_per_file: 1000
+# Recommended for long recordings: save bounded chunks while acquisition runs.
+frames_per_file: 1000
+
+# Progress/status log interval (default: 10 seconds)
+progress_interval_s: 10.0
 
 # Requested camera parameters
 width: 1024
@@ -27,6 +32,11 @@ offset_y: 0
 pixel_format: "Mono12"
 gain: 0.0
 exposure_time: 1000.0
+# Optional camera-sequencer exposure cycle. When present, this takes priority
+# over exposure_time. Any non-empty length is supported, including one item.
+# exposure_times_us:
+#   - 1000.0
+#   - 10000.0
 black_level: 0.0
 trigger_mode: "Off"              # Off / On
 trigger_source: "Line1"          # Software / Line1 / ...
