@@ -65,6 +65,11 @@ progress_interval_s: 10.0
 複数露光にはSequencer対応カメラが必要です。非対応時や必要なGenICamノードを安全に設定できない場合は
 撮像開始前にエラーとし、毎フレームのソフトウェア書き換えへはフォールバックしません。
 
+`acA1440-220um` などのace Classic USBカメラでは、`SequencerSetSelector`、
+`SequencerSetSave`、`SequencerSetLoad`、`SequencerPathSelector`などの設定用ノードは、
+`SequencerMode = Off`かつ`SequencerConfigurationMode = On`へ移行した後に利用可能になります。
+本プログラムはこの順序で設定し、失敗時も設定モードを解除してから終了します。
+
 #### 各項目の意味
 - `output_dir`: 出力先ディレクトリ。
 - `camera_index`: 使用カメラ番号（複数接続時）。

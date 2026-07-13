@@ -730,77 +730,83 @@ def configure_exposure_sequencer(
         required=True,
         purpose="sequencer configuration mode node",
     )
-    selector = _resolve_feature(
-        camera,
-        ("SequencerSetSelector",),
-        readable=True,
-        writable=True,
-        required=True,
-        purpose="sequencer set selector",
-    )
-    save_command = _resolve_feature(
-        camera,
-        ("SequencerSetSave",),
-        writable=True,
-        required=True,
-        purpose="sequencer set save command",
-    )
-    load_command = _resolve_feature(
-        camera,
-        ("SequencerSetLoad",),
-        writable=True,
-        required=True,
-        purpose="sequencer set load command",
-    )
-    path_selector = _resolve_feature(
-        camera,
-        ("SequencerPathSelector",),
-        readable=True,
-        writable=True,
-        required=True,
-        purpose="sequencer path selector",
-    )
-    set_next = _resolve_feature(
-        camera,
-        ("SequencerSetNext",),
-        readable=True,
-        writable=True,
-        required=True,
-        purpose="sequencer next-set node",
-    )
-    trigger_source = _resolve_feature(
-        camera,
-        ("SequencerTriggerSource",),
-        writable=True,
-        required=True,
-        purpose="sequencer trigger source",
-    )
-    assert all(
-        item is not None
-        for item in (exposure, mode, selector, save_command, load_command, path_selector, set_next, trigger_source)
-    )
+    assert configuration_mode is not None
 
+    # ExposureTime is available before entering sequencer configuration mode,
+    # so reject invalid requests without changing the camera mode.
     _validate_camera_exposure_range(camera, exposure, exposure_times_us)
-    selector_min, selector_max = _feature_min_max(camera, selector)
-    if selector_min is not None and selector_min > 0:
-        raise RuntimeError(f"Sequencer set selector starts at {selector_min:g}; set 0 is unavailable")
-    if selector_max is not None and len(exposure_times_us) - 1 > int(selector_max):
-        raise ValueError(
-            f"Camera supports sequencer set IDs through {int(selector_max)}, "
-            f"but {len(exposure_times_us)} exposure values were requested"
-        )
-
-    path_min, path_max = _feature_min_max(camera, path_selector)
-    advance_path = 1
-    if (path_min is not None and path_min > 1) or (path_max is not None and path_max < 1):
-        advance_path = 0
 
     set_map: dict[int, float] = {}
     trigger_value: str | None = None
     try:
+        # On ace Classic USB cameras, the set/path nodes are gated by
+        # SequencerConfigurationMode. Resolve them only after entering it.
         _set_feature_value(camera, mode, "Off")
-        if configuration_mode is not None:
-            _set_feature_value(camera, configuration_mode, "On")
+        _set_feature_value(camera, configuration_mode, "On")
+
+        selector = _resolve_feature(
+            camera,
+            ("SequencerSetSelector",),
+            readable=True,
+            writable=True,
+            required=True,
+            purpose="sequencer set selector",
+        )
+        save_command = _resolve_feature(
+            camera,
+            ("SequencerSetSave",),
+            writable=True,
+            required=True,
+            purpose="sequencer set save command",
+        )
+        load_command = _resolve_feature(
+            camera,
+            ("SequencerSetLoad",),
+            writable=True,
+            required=True,
+            purpose="sequencer set load command",
+        )
+        path_selector = _resolve_feature(
+            camera,
+            ("SequencerPathSelector",),
+            readable=True,
+            writable=True,
+            required=True,
+            purpose="sequencer path selector",
+        )
+        set_next = _resolve_feature(
+            camera,
+            ("SequencerSetNext",),
+            readable=True,
+            writable=True,
+            required=True,
+            purpose="sequencer next-set node",
+        )
+        trigger_source = _resolve_feature(
+            camera,
+            ("SequencerTriggerSource",),
+            writable=True,
+            required=True,
+            purpose="sequencer trigger source",
+        )
+        assert all(
+            item is not None
+            for item in (selector, save_command, load_command, path_selector, set_next, trigger_source)
+        )
+
+        selector_min, selector_max = _feature_min_max(camera, selector)
+        if selector_min is not None and selector_min > 0:
+            raise RuntimeError(f"Sequencer set selector starts at {selector_min:g}; set 0 is unavailable")
+        if selector_max is not None and len(exposure_times_us) - 1 > int(selector_max):
+            raise ValueError(
+                f"Camera supports sequencer set IDs through {int(selector_max)}, "
+                f"but {len(exposure_times_us)} exposure values were requested"
+            )
+
+        path_min, path_max = _feature_min_max(camera, path_selector)
+        advance_path = 1
+        if (path_min is not None and path_min > 1) or (path_max is not None and path_max < 1):
+            advance_path = 0
 
         for set_id, requested_us in enumerate(exposure_times_us):
             _set_feature_value(camera, selector, set_id)
@@ -841,19 +847,19 @@ def configure_exposure_sequencer(
             _set_feature_value(camera, start, 0)
         _set_feature_value(camera, selector, 0)
         _execute_feature(camera, load_command)
-        if configuration_mode is not None:
-            _set_feature_value(camera, configuration_mode, "Off")
+        _set_feature_value(camera, configuration_mode, "Off")
         _set_feature_value(camera, mode, "On")
     except Exception as exc:
         try:
-            if configuration_mode is not None:
-                _set_feature_value(camera, configuration_mode, "Off")
+            _set_feature_value(camera, configuration_mode, "Off")
         except Exception:
             pass
         try:
             _set_feature_value(camera, mode, "Off")
         except Exception:
             pass
+        if isinstance(exc, ValueError):
+            raise
         raise RuntimeError(f"Failed to configure camera exposure sequencer before acquisition: {exc}") from exc
 
     for set_id, actual_us in set_map.items():
@@ -864,7 +870,7 @@ def configure_exposure_sequencer(
         node_names={
             "backend": "sequencer_path",
             "mode": mode.name,
-            "configuration_mode": configuration_mode.name if configuration_mode is not None else None,
+            "configuration_mode": configuration_mode.name,
             "set_selector": selector.name,
             "set_save": save_command.name,
             "set_load": load_command.name,
