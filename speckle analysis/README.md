@@ -90,6 +90,65 @@ timeVec10ms = allTimeVec(idx10ms);
 1 msと10 msは完全な同時測定ではありません。交互に撮像するため、各露光系列の実効サンプリング
 レートは全体レートより低くなります。FFTには各系列のTimestamp差から求めた実効レートを使います。
 
+## SCOS-NIRS解析
+
+`SCOSNIRSvsTime_WithNoiseSubtraction_Ver2.m`は、上記SCOS解析をそのまま呼び出した後、2波長・
+2つの送受光距離ROIの平均強度からNIRS指標を計算します。NPYの単一／チャンク形式、露光別Dark、
+SCOSの露光別解析は既存スクリプトと共通です。
+
+```matlab
+options = struct( ...
+    'wavelengthsNm', [785 830], ...
+    'wavelengthSetIds', [0 1], ...
+    'sourceDetectorChannels', [1 2], ... % short ROI, long ROI
+    'sourceDetectorDistancesCm', [2 3], ...
+    'baselineDurationS', 60);
+
+[timeVec, rawK, corrK, meanI, info, results, nirs] = ...
+    SCOSNIRSvsTime_WithNoiseSubtraction_Ver2( ...
+        recName, darkName, 7, false, masks, options);
+```
+
+計算結果は`nirs`と`results.nirs`へ格納されます。
+
+```matlab
+nirs.HbO
+nirs.HbR
+nirs.StO2
+nirs.OEF
+nirs.rOEF
+nirs.BFI
+nirs.rBFI
+nirs.rMRO2
+nirs.timeVec
+```
+
+計算フローは次のとおりです。
+
+1. 保存済み`sequencerSetIds`で785/830 nm相当フレームを選別する。
+2. カメラTimestampとSetの循環順から同じ周期の2波長フレームを1対1で対応付ける。
+3. 各波長について短距離／長距離ROI強度の対数傾きから吸収係数を推定する。
+4. 2×2の吸光係数行列からHbO/HbRとStO2、OEFを計算する。
+5. 基準区間のOEFと長距離ROIのBFIで正規化し、rOEF、rBFI、rMRO2を計算する。
+
+フレーム番号の偶奇では波長を推定しないため、片方の波長フレームが欠落しても後続フレームが
+1つずつずれません。対応できなかった周期はNIRS系列から除外され、SCOS系列自体は保持されます。
+
+重要な前提と制約：
+
+- カメラのChunkには光源波長そのものは保存されません。`wavelengthSetIds = [0 1]`は
+  「Set 0で785 nm、Set 1で830 nm光源が同期点灯する」という計測系側の対応を指定します。
+- カメラSequencerとLED/レーザー切替の物理同期は別途保証する必要があります。
+- `sourceDetectorChannels = [1 2]`は、ROI 1が短距離、ROI 2が長距離であることを意味します。
+- 既定の距離、散乱近似、吸光係数行列は添付の従来計算を踏襲した初期値です。HbO/HbRの単位と
+  絶対値は係数に依存するため、定量評価前に装置・波長・組織モデルに合う値へ置換してください。
+- rOEFとrMRO2は先頭60秒を基準とする相対指標です。絶対OEF、絶対CMRO2ではありません。
+- 非正または非有限の光強度は対数計算せず、そのペアのNIRS値をNaNにします。
+
+通常実行では`SCOSNIRS_output.mat`を記録フォルダへ保存します。`plotNirs=true`の場合は
+HbO/HbR、StO2、rOEF/rBFI、rMRO2のFIG/PNGも保存します。保存や描画を止める場合は
+`saveOutput=false`、`plotNirs=false`をoptionsへ指定します。
+
 ## ノイズ補正上の制約
 
 露光時間により光強度、Dark noise、shot noise、spatial noise特性が変化します。そのため、異なる
@@ -119,6 +178,11 @@ Darkデータが必要です。今回の実装はDark撮像シーケンスの自
 `tests/testExposureGroupingAndTimeAxis.m` は、固定露光、単一要素Sequencer、許容差付き複数露光、
 未観測sequence、ドロップ相当Timestamp、datenum変換、旧FPSフォールバック、部分Timestamp拒否を
 実カメラなしで検証します。
+
+`tests/testNirsFromScosResults.m` は、2波長NIRS式、HbO/HbR・StO2・rOEF・rBFI・rMRO2、
+同一露光グループ内のSet ID分離、波長マッピング、ドロップ時のペアずれ防止、不正光強度と
+ROI channel検証を合成SCOS結果で確認します。NIRS計算ロジックは共通ヘルパーではなく、
+`SCOSNIRSvsTime_WithNoiseSubtraction_Ver2.m`本文内のローカル関数に含まれます。
 
 ```matlab
 results = runtests(fullfile(pwd,'speckle analysis','tests'));
