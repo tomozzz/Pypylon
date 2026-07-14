@@ -92,9 +92,10 @@ timeVec10ms = allTimeVec(idx10ms);
 
 ## SCOS-NIRS解析
 
-`SCOSNIRSvsTime_WithNoiseSubtraction_Ver2.m`は、上記SCOS解析をそのまま呼び出した後、2波長・
-2つの送受光距離ROIの平均強度からNIRS指標を計算します。NPYの単一／チャンク形式、露光別Dark、
-SCOSの露光別解析は既存スクリプトと共通です。
+`SCOSNIRSvsTime_WithNoiseSubtraction_Ver2.m`は、SCOSスクリプトを呼び出す薄いラッパーでは
+ありません。NPY読込、露光別Dark、ROI別SCOS、BFI/rBFIまでを同じファイル内で独立して実行し、
+続けて2波長・2つの送受光距離ROIの平均強度からNIRS指標を計算します。SCOS単独版とNIRS版は
+同じ補正アルゴリズムを各ファイル本文に保持します。
 
 ```matlab
 options = struct( ...
@@ -155,6 +156,12 @@ HbO/HbR、StO2、rOEF/rBFI、rMRO2のFIG/PNGも保存します。保存や描画
 露光時間の画像を平均してから空間補正やSCOS解析を行いません。複数露光Darkに対応条件があれば
 条件別に計算します。
 
+光強度の空間フィット`FitMeanIm`は、露光条件×ROIごとに計算します。空間分散から校正フレームの
+shot noiseを差し引いて負値を0へ制限し、露光条件別のspatial/Dark noiseマップを各ROIマスク内で
+評価します。補正分子は`local variance - shot noise - spatial variance - dark variance`であり、
+量子化雑音項`1/12`は差し引きません。旧形式の`smoothingCoefficients*.mat`は再利用せず、
+新しいキャッシュ形式へ自動再計算します。
+
 露光別Darkがなく、単一Darkまたは露光メタデータのない旧Darkだけがある場合は、同一補正値を
 複数露光条件へ適用して警告します。この結果には制約があり、厳密な露光間比較には露光時間別の
 Darkデータが必要です。今回の実装はDark撮像シーケンスの自動化を必須としていません。
@@ -183,6 +190,10 @@ Darkデータが必要です。今回の実装はDark撮像シーケンスの自
 同一露光グループ内のSet ID分離、波長マッピング、ドロップ時のペアずれ防止、不正光強度と
 ROI channel検証を合成SCOS結果で確認します。NIRS計算ロジックは共通ヘルパーではなく、
 `SCOSNIRSvsTime_WithNoiseSubtraction_Ver2.m`本文内のローカル関数に含まれます。
+
+`tests/testScosRoiNoiseCorrection.m`は、露光条件×ROI別フィット、空間shot noise減算、`1/12`を
+含まない補正式、旧キャッシュの再計算、および独立SCOS-NIRS本体とSCOS単独版の結果一致を
+合成NPY記録で数値検証します。
 
 ```matlab
 results = runtests(fullfile(pwd,'speckle analysis','tests'));

@@ -63,7 +63,6 @@ if nargin == 0 % GUI mode
     clear answer
 end
 
-isRecordFile = false;
 if nargin == 0  || isempty(backgroundName)
     if exist([recName , '_dark'],'dir')
         backgroundName = [recName , '_dark'];
@@ -196,8 +195,8 @@ if ~exist('masks','var')
         while addMore
             [maskTemp , circ , figMask] = GetROI(meanImForMask,windowSize);
             masks{ch} = maskTemp; %#ok<AGROW>
-            channels.Centers(ch,:) = circ.Center; %#ok<AGROW>
-            channels.Radii(ch,1)   = circ.Radius; %#ok<AGROW>
+            channels.Centers(ch,:) = circ.Center;
+            channels.Radii(ch,1)   = circ.Radius;
             answer = questdlg('Add another ROI?','Channels','Yes','No','No');
             addMore = strcmp(answer,'Yes');
             ch = ch + 1;
@@ -225,8 +224,8 @@ if ~exist('masks','var')
     end
 end
 for k=1:numel(masks)
-    masks{k}( [ 1:ws2 (end-ws2+1):end ],:) = false; %#ok<AGROW>
-    masks{k}( : , [ 1:ws2 (end-ws2+1):end ]) = false; %#ok<AGROW>
+    masks{k}( [ 1:ws2 (end-ws2+1):end ],:) = false;
+    masks{k}( : , [ 1:ws2 (end-ws2+1):end ]) = false;
 end
 totMask( [ 1:ws2 (end-ws2+1):end ], : ) = false;
 totMask( : , [ 1:ws2 (end-ws2+1):end ]) = false;
@@ -307,7 +306,7 @@ actualGain = GetActualGain(info);
 %% Calc spatialNoise 
 spatialCalibration = localBuildSpatialCorrections(recName,sourceFiles, ...
     exposureGroupIndex,exposureGroupValuesUs,backgroundByExposure, ...
-    BlackLevel,totMask,windowSize,plotFlag);
+    BlackLevel,masks,totMask,windowSize,actualGain,plotFlag);
 
 disp('Calibration Time')
 toc(start_calib_time)
@@ -332,14 +331,19 @@ for ch = 1:numel(masks)
     masks_cut{ch} = masks{ch}(roi.y  , roi.x); 
 end
 
+nOfChannels = numel(masks);
 analysisCalibration = repmat(struct(),1,nExposureGroups);
 for exposureIdx = 1:nExposureGroups
     analysisCalibration(exposureIdx).exposureTimeUs = exposureGroupValuesUs(exposureIdx);
     analysisCalibration(exposureIdx).background = backgroundByExposure{exposureIdx};
-    analysisCalibration(exposureIdx).fitI_A_cut = ...
-        spatialCalibration(exposureIdx).fitI_A(roi.y,roi.x);
-    analysisCalibration(exposureIdx).fitI_B_cut = ...
-        spatialCalibration(exposureIdx).fitI_B(roi.y,roi.x);
+    analysisCalibration(exposureIdx).fitI_A_cut_byCh = cell(1,nOfChannels);
+    analysisCalibration(exposureIdx).fitI_B_cut_byCh = cell(1,nOfChannels);
+    for channelIdx = 1:nOfChannels
+        analysisCalibration(exposureIdx).fitI_A_cut_byCh{channelIdx} = ...
+            spatialCalibration(exposureIdx).fitI_A_byCh{channelIdx}(roi.y,roi.x);
+        analysisCalibration(exposureIdx).fitI_B_cut_byCh{channelIdx} = ...
+            spatialCalibration(exposureIdx).fitI_B_byCh{channelIdx}(roi.y,roi.x);
+    end
     analysisCalibration(exposureIdx).spVar_cut = ...
         spatialCalibration(exposureIdx).spVar(roi.y,roi.x);
     analysisCalibration(exposureIdx).darkVarPerWindow_cut = ...
@@ -349,7 +353,6 @@ end
 %% Calc Specle Contrast
 disp(['Calculating SCOS on "' recName '" ... ']);
 disp(['Mono' num2str(nOfBits)]);
-nOfChannels = numel(masks);
 frameNames = cell(nOfFrames,1);
 
 im1 = double(im1);
@@ -468,7 +471,11 @@ for exposureIdx = 1:nExposureGroups
     else
         exposureResult.effectiveFrameRateHz = NaN;
     end
-    results.byExposure(exposureIdx) = exposureResult;
+    if exposureIdx == 1
+        results.byExposure = exposureResult;
+    else
+        results.byExposure(exposureIdx) = exposureResult;
+    end
 end
 
 if ~isMultipleExposure
@@ -478,7 +485,6 @@ if ~isMultipleExposure
     meanVec = localMatrixColumnsToCells(results.byExposure(1).meanIntensity);
     BFI_matrix = results.byExposure(1).BFI;
     meanI_matrix = results.byExposure(1).meanIntensity;
-    BFi = localMatrixColumnsToCells(BFI_matrix);
     p2p_time = timeVec<timePeriodForP2P; %#ok<NASGU>
 else
     % The legacy outputs cannot represent multiple exposure-specific clocks
@@ -489,7 +495,6 @@ else
     meanVec = {};
     BFI_matrix = [];
     meanI_matrix = [];
-    BFi = {};
     warning('SCOSvsTime:MultipleExposureResults', ...
         ['Multiple exposure conditions were analyzed separately. Legacy time-series ' ...
          'outputs are empty; use results.byExposure.']);
@@ -503,7 +508,7 @@ end % just for it to have the right date
 
 startDateTime = sourceFiles.startDateTime;
 if isempty(startDateTime)
-    startDateTime = datestr(now);
+    startDateTime = char(datetime('now','Format','yyyy-MM-dd HH:mm:ss'));
 end
 
 if ~exist('channels','var')
@@ -590,7 +595,7 @@ if isNpyBackground
             backgroundSourceFiles.totalFrames);
 
     backgroundBlackLevel = localInfoBlackLevel(backgroundInfo);
-    if numel(backgroundGroupValuesUs) == 1
+    if isscalar(backgroundGroupValuesUs)
         indices = find(backgroundGroups == 1);
         [sharedBackground,sharedDarkVar] = localReadNpyDarkStatistics( ...
             backgroundName,backgroundSourceFiles,indices,requiredBackgroundFrames, ...
@@ -790,45 +795,37 @@ end
 
 function spatialCalibration = localBuildSpatialCorrections(recName,sourceFiles, ...
         exposureGroupIndex,exposureGroupValuesUs,backgroundByExposure, ...
-        blackLevel,totMask,windowSize,plotFlag)
+        blackLevel,masks,totMask,windowSize,actualGain,plotFlag)
 % Spatial coefficients are estimated independently for every applied
 % exposure. Averaging alternating exposures here would mix both intensity
 % and exposure-dependent noise before SCOS is calculated.
 
 nExposureGroups = numel(exposureGroupValuesUs);
+calibrationVersion = 2;
 if nExposureGroups == 1
     cachePath = fullfile(recName,'smoothingCoefficients.mat');
-    if exist(cachePath,'file') == 2
-        cached = load(cachePath);
-        requiredFields = {'spVar','fitI_A','fitI_B','spIm'};
-        if all(isfield(cached,requiredFields)) && ...
-                isequal(size(cached.spVar),sourceFiles.imageSize)
-            disp('Load Spatial Noise and Smoothing Coefficients');
-            spatialCalibration = struct('exposureTimeUs',exposureGroupValuesUs(1), ...
-                'spVar',cached.spVar,'fitI_A',cached.fitI_A, ...
-                'fitI_B',cached.fitI_B,'spIm',cached.spIm,'frameCount',NaN);
-            return;
-        end
-    end
 else
     cachePath = fullfile(recName,'smoothingCoefficientsByExposure.mat');
-    if exist(cachePath,'file') == 2
-        cached = load(cachePath);
-        if isfield(cached,'spatialCalibration') && ...
-                isfield(cached,'savedWindowSize') && cached.savedWindowSize == windowSize && ...
-                isfield(cached,'savedMask') && isequal(cached.savedMask,totMask) && ...
-                isfield(cached,'savedExposureValuesUs') && ...
-                numel(cached.savedExposureValuesUs) == nExposureGroups && ...
-                all(arrayfun(@(idx) ~isempty(localFindExposureMatch( ...
-                    exposureGroupValuesUs(idx),cached.savedExposureValuesUs)),1:nExposureGroups))
-            disp('Load exposure-specific Spatial Noise and Smoothing Coefficients');
-            spatialCalibration = cached.spatialCalibration;
-            return;
+end
+if exist(cachePath,'file') == 2
+    cached = load(cachePath);
+    [cacheIsValid,cacheOrder] = localValidateSpatialCache(cached,calibrationVersion, ...
+        sourceFiles.imageSize,windowSize,masks,exposureGroupValuesUs,actualGain);
+    if cacheIsValid
+        if nExposureGroups == 1
+            disp('Load ROI-specific Spatial Noise and Smoothing Coefficients');
+        else
+            disp('Load exposure- and ROI-specific Spatial Noise and Smoothing Coefficients');
         end
+        spatialCalibration = cached.spatialCalibration(cacheOrder);
+        return;
     end
+    warning('SCOSvsTime:StaleSpatialCache', ...
+        ['Ignoring an incompatible spatial-calibration cache. The cache will be ' ...
+         'recomputed with ROI-specific intensity fits and spatial shot-noise subtraction.']);
 end
 
-disp('Calc exposure-specific Spatial Noise and Smoothing Coefficients');
+disp('Calc exposure- and ROI-specific Spatial Noise and Smoothing Coefficients');
 spatialCalibration = repmat(struct(),1,nExposureGroups);
 for exposureIdx = 1:nExposureGroups
     availableIndices = find(exposureGroupIndex == exposureIdx);
@@ -856,13 +853,22 @@ for exposureIdx = 1:nExposureGroups
     end
     spatialRecord = spatialRecord - blackLevel;
     spatialImage = mean(spatialRecord,3) - backgroundByExposure{exposureIdx};
-    spatialVariance = stdfilt(spatialImage,true(windowSize)).^2;
-    [fitI_A,fitI_B] = FitMeanIm(spatialRecord,totMask,windowSize);
+    spatialVarianceRaw = stdfilt(spatialImage,true(windowSize)).^2;
+    spatialShotVariance = actualGain .* imboxfilt(spatialImage,windowSize) ./ nSpatialFrames;
+    spatialVariance = max(spatialVarianceRaw - spatialShotVariance,0);
+    fitI_A_byCh = cell(1,numel(masks));
+    fitI_B_byCh = cell(1,numel(masks));
+    for channelIdx = 1:numel(masks)
+        [fitI_A_byCh{channelIdx},fitI_B_byCh{channelIdx}] = ...
+            FitMeanIm(spatialRecord,masks{channelIdx},windowSize);
+    end
 
     spatialCalibration(exposureIdx).exposureTimeUs = exposureGroupValuesUs(exposureIdx);
     spatialCalibration(exposureIdx).spVar = spatialVariance;
-    spatialCalibration(exposureIdx).fitI_A = fitI_A;
-    spatialCalibration(exposureIdx).fitI_B = fitI_B;
+    spatialCalibration(exposureIdx).spVarRaw = spatialVarianceRaw;
+    spatialCalibration(exposureIdx).spShotVar = spatialShotVariance;
+    spatialCalibration(exposureIdx).fitI_A_byCh = fitI_A_byCh;
+    spatialCalibration(exposureIdx).fitI_B_byCh = fitI_B_byCh;
     spatialCalibration(exposureIdx).spIm = spatialImage;
     spatialCalibration(exposureIdx).frameCount = nSpatialFrames;
 
@@ -879,20 +885,75 @@ for exposureIdx = 1:nExposureGroups
         savefig(spatialFigure,fullfile(recName,figureName));
     end
 end
-
-if nExposureGroups == 1
-    spVar = spatialCalibration.spVar; %#ok<NASGU>
-    fitI_A = spatialCalibration.fitI_A; %#ok<NASGU>
-    fitI_B = spatialCalibration.fitI_B; %#ok<NASGU>
-    spIm = spatialCalibration.spIm; %#ok<NASGU>
-    save(cachePath,'spVar','fitI_A','fitI_B','spIm','totMask');
-else
-    savedWindowSize = windowSize; %#ok<NASGU>
-    savedMask = totMask; %#ok<NASGU>
-    savedExposureValuesUs = exposureGroupValuesUs; %#ok<NASGU>
-    save(cachePath,'spatialCalibration','savedWindowSize','savedMask', ...
-        'savedExposureValuesUs');
+savedCalibrationVersion = calibrationVersion;
+savedWindowSize = windowSize;
+savedMasks = masks;
+savedMask = totMask;
+savedExposureValuesUs = exposureGroupValuesUs;
+savedActualGain = actualGain;
+save(cachePath,'spatialCalibration','savedCalibrationVersion','savedWindowSize', ...
+    'savedMasks','savedMask','savedExposureValuesUs','savedActualGain');
 end
+
+function [isValid,cacheOrder] = localValidateSpatialCache(cached,expectedVersion, ...
+        imageSize,windowSize,masks,exposureValuesUs,actualGain)
+isValid = false;
+cacheOrder = [];
+required = {'spatialCalibration','savedCalibrationVersion','savedWindowSize', ...
+    'savedMasks','savedExposureValuesUs','savedActualGain'};
+if ~all(isfield(cached,required)) || ...
+        ~isnumeric(cached.savedCalibrationVersion) || ...
+        ~isscalar(cached.savedCalibrationVersion) || ...
+        cached.savedCalibrationVersion ~= expectedVersion || ...
+        ~isnumeric(cached.savedWindowSize) || ~isscalar(cached.savedWindowSize) || ...
+        cached.savedWindowSize ~= windowSize || ...
+        ~iscell(cached.savedMasks) || ...
+        ~isequal(cached.savedMasks,masks) || ...
+        ~isnumeric(cached.savedActualGain) || ~isscalar(cached.savedActualGain) || ...
+        ~isequaln(cached.savedActualGain,actualGain) || ...
+        ~isnumeric(cached.savedExposureValuesUs) || ...
+        numel(cached.savedExposureValuesUs) ~= numel(exposureValuesUs) || ...
+        numel(cached.spatialCalibration) ~= numel(exposureValuesUs)
+    return;
+end
+
+cacheOrder = zeros(1,numel(exposureValuesUs));
+for exposureIdx = 1:numel(exposureValuesUs)
+    matchingCacheExposure = localFindExposureMatch( ...
+        exposureValuesUs(exposureIdx),cached.savedExposureValuesUs);
+    if isempty(matchingCacheExposure) || matchingCacheExposure < 1
+        cacheOrder = [];
+        return;
+    end
+    cacheOrder(exposureIdx) = matchingCacheExposure;
+end
+if numel(unique(cacheOrder)) ~= numel(cacheOrder)
+    cacheOrder = [];
+    return;
+end
+
+for exposureIdx = 1:numel(cacheOrder)
+    calibration = cached.spatialCalibration(cacheOrder(exposureIdx));
+    requiredCalibration = {'spVar','spVarRaw','spShotVar','fitI_A_byCh', ...
+        'fitI_B_byCh','spIm','frameCount'};
+    if ~all(isfield(calibration,requiredCalibration)) || ...
+            ~isequal(size(calibration.spVar),imageSize) || ...
+            ~isequal(size(calibration.spVarRaw),imageSize) || ...
+            ~isequal(size(calibration.spShotVar),imageSize) || ...
+            numel(calibration.fitI_A_byCh) ~= numel(masks) || ...
+            numel(calibration.fitI_B_byCh) ~= numel(masks)
+        cacheOrder = [];
+        return;
+    end
+    for channelIdx = 1:numel(masks)
+        if ~isequal(size(calibration.fitI_A_byCh{channelIdx}),imageSize) || ...
+                ~isequal(size(calibration.fitI_B_byCh{channelIdx}),imageSize)
+            cacheOrder = [];
+            return;
+        end
+    end
+end
+isValid = true;
 end
 
 function [rawRow,corrRow,meanRow] = localCalculateScosFrame(rawFrame,divideBy, ...
@@ -910,11 +971,12 @@ meanRow = nan(1,nChannels);
 for channelIdx = 1:nChannels
     mask = masksCut{channelIdx};
     meanIntensity = mean(imageCut(mask));
-    fittedIntensity = calibration.fitI_A_cut .* meanIntensity + calibration.fitI_B_cut;
+    fittedIntensity = calibration.fitI_A_cut_byCh{channelIdx} .* meanIntensity + ...
+        calibration.fitI_B_cut_byCh{channelIdx};
     fittedIntensitySquared = fittedIntensity.^2;
     rawRow(channelIdx) = mean(localVariance(mask) ./ fittedIntensitySquared(mask));
     correctedNumerator = localVariance - actualGain .* fittedIntensity - ...
-        calibration.spVar_cut - 1/12 - calibration.darkVarPerWindow_cut;
+        calibration.spVar_cut - calibration.darkVarPerWindow_cut;
     corrRow(channelIdx) = mean(correctedNumerator(mask) ./ fittedIntensitySquared(mask));
     meanRow(channelIdx) = meanIntensity;
 end
