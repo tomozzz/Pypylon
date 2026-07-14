@@ -311,6 +311,43 @@ def try_execute_command(camera: pylon.InstantCamera, name: str) -> bool:
         return False
 
 
+def disable_exposure_sequencer(camera: object) -> tuple[str, ...]:
+    """Leave modern or legacy sequencer modes disabled when present.
+
+    A USB camera keeps SequencerMode enabled after acquisition and while the
+    device remains powered. Disable it before applying ordinary camera/chunk
+    settings and again before closing so consecutive capture runs are safe.
+    """
+    disabled: list[str] = []
+    mode = _resolve_feature(
+        camera,
+        ("SequencerMode", "SequenceEnable"),
+        readable=True,
+        writable=True,
+        required=False,
+    )
+    if mode is not None:
+        off_value: Any = False if mode.name == "SequenceEnable" else "Off"
+        if _get_feature_value(camera, mode) != off_value:
+            _set_feature_value(camera, mode, off_value)
+        disabled.append(mode.name)
+
+    configuration_mode = _resolve_feature(
+        camera,
+        ("SequencerConfigurationMode", "SequenceConfigurationMode"),
+        readable=True,
+        writable=True,
+        required=False,
+    )
+    if configuration_mode is not None:
+        current = _get_feature_value(camera, configuration_mode)
+        off_value = False if isinstance(current, bool) else "Off"
+        if current != off_value:
+            _set_feature_value(camera, configuration_mode, off_value)
+        disabled.append(configuration_mode.name)
+    return tuple(disabled)
+
+
 
 @dataclass(frozen=True)
 class ChunkCapabilities:
@@ -774,24 +811,9 @@ def configure_exposure_sequencer(
             required=True,
             purpose="sequencer path selector",
         )
-        set_next = _resolve_feature(
-            camera,
-            ("SequencerSetNext",),
-            readable=True,
-            writable=True,
-            required=True,
-            purpose="sequencer next-set node",
-        )
-        trigger_source = _resolve_feature(
-            camera,
-            ("SequencerTriggerSource",),
-            writable=True,
-            required=True,
-            purpose="sequencer trigger source",
-        )
         assert all(
             item is not None
-            for item in (selector, save_command, load_command, path_selector, set_next, trigger_source)
+            for item in (selector, save_command, load_command, path_selector)
         )
 
         selector_min, selector_max = _feature_min_max(camera, selector)
@@ -804,45 +826,65 @@ def configure_exposure_sequencer(
             )
 
         path_min, path_max = _feature_min_max(camera, path_selector)
-        advance_path = 1
         if (path_min is not None and path_min > 1) or (path_max is not None and path_max < 1):
-            advance_path = 0
+            raise RuntimeError("Sequencer path 1 is unavailable; cyclic set advance cannot be configured")
+        advance_path = 1
 
+        # Phase 1: populate a continuous sequence of exposure sets 0..N-1.
+        # Loading or saving a set includes every sequenceable parameter, so
+        # keep enabled chunk selectors stored in every set as well.
         for set_id, requested_us in enumerate(exposure_times_us):
             _set_feature_value(camera, selector, set_id)
             _set_feature_value(camera, exposure, requested_us)
             actual_us = float(_get_feature_value(camera, exposure))
+            _reenable_chunk_selectors(camera, chunk_selector_values)
+            _execute_feature(camera, save_command)
+            set_map[set_id] = actual_us
+
+        # Phase 2: explicitly load and rewrite every path transition. Basler
+        # defaults unused sets to ascending order, but those defaults no longer
+        # apply after a previous shorter sequence has stored an early Next=0.
+        # The path-1 trigger source itself belongs to set 0 and is written only
+        # once; later sets can expose that enum as non-writable.
+        set_next: ResolvedFeature | None = None
+        trigger_source: ResolvedFeature | None = None
+        for set_id in range(len(exposure_times_us)):
+            _set_feature_value(camera, selector, set_id)
+            _execute_feature(camera, load_command)
             _set_feature_value(camera, path_selector, advance_path)
+            if set_next is None:
+                set_next = _resolve_feature(
+                    camera,
+                    ("SequencerSetNext",),
+                    readable=True,
+                    writable=True,
+                    required=True,
+                    purpose="sequencer next-set node for loaded set / path 1",
+                )
+                assert set_next is not None
             _set_feature_value(camera, set_next, (set_id + 1) % len(exposure_times_us))
-            if trigger_value is None:
+            if set_id == 0:
+                trigger_source = _resolve_feature(
+                    camera,
+                    ("SequencerTriggerSource",),
+                    writable=True,
+                    required=True,
+                    purpose="sequencer trigger source for loaded set 0 / path 1",
+                )
+                assert trigger_source is not None
                 trigger_value = _set_first_supported_enum(
                     camera,
                     trigger_source,
                     ("FrameStart", "ExposureStart", "FrameEnd", "Auto"),
                 )
-            else:
-                _set_feature_value(camera, trigger_source, trigger_value)
-            activation = _resolve_feature(
-                camera,
-                ("SequencerTriggerActivation",),
-                writable=True,
-                required=False,
-            )
-            if activation is not None:
-                try:
-                    _set_feature_value(camera, activation, "RisingEdge")
-                except Exception:
-                    pass
             _reenable_chunk_selectors(camera, chunk_selector_values)
             _execute_feature(camera, save_command)
-            set_map[set_id] = actual_us
 
-        start = _resolve_feature(
-            camera,
-            ("SequencerSetStart",),
-            writable=True,
-            required=False,
-        )
+        assert set_next is not None and trigger_source is not None
+
+        # Phase 3/4: start the next acquisition from set 0, then leave
+        # configuration mode before enabling the sequencer.
+        start = _resolve_feature(camera, ("SequencerSetStart",), writable=True, required=False)
         if start is not None:
             _set_feature_value(camera, start, 0)
         _set_feature_value(camera, selector, 0)
@@ -1587,6 +1629,7 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
 
         camera = pylon.InstantCamera(tl_factory.CreateDevice(devices[cfg.camera_index]))
         camera.Open()
+        disable_exposure_sequencer(camera)
         pre_disabled_auto_nodes = _disable_auto_features(camera)
         apply_camera_settings(camera, cfg, apply_exposure=False)
         camera_identity = get_camera_identity(camera)
@@ -1762,6 +1805,15 @@ def capture(cfg: CaptureConfig, output_override: str | None = None) -> Path:
                     camera.StopGrabbing()
             except Exception:
                 pass
+            try:
+                if camera.IsOpen():
+                    disable_exposure_sequencer(camera)
+            except BaseException as exc:
+                status = "failed"
+                if fatal_error is None:
+                    fatal_error = exc
+                else:
+                    print(f"[WARN] Additional sequencer shutdown error: {exc}")
 
         # Flush every complete successful frame still held in memory.
         if metadata_manager is not None and len(buffer) > 0:

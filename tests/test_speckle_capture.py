@@ -25,6 +25,7 @@ class FakeNode:
         readable=True,
         available=True,
         accepted=None,
+        on_execute=None,
     ):
         self.Value = value
         self.Min = minimum
@@ -33,6 +34,7 @@ class FakeNode:
         self.readable = readable
         self.available = available
         self.accepted = set(accepted) if accepted is not None else None
+        self.on_execute = on_execute
         self.set_history = []
         self.execute_count = 0
 
@@ -57,6 +59,8 @@ class FakeNode:
         if not self._flag_value(self.writable):
             raise RuntimeError("not writable")
         self.execute_count += 1
+        if self.on_execute is not None:
+            self.on_execute()
 
 
 class FakeNodeMap:
@@ -173,73 +177,177 @@ class ConfigValidationTests(unittest.TestCase):
 class SequencerTests(unittest.TestCase):
     def modern_nodes(self):
         configuration_mode = FakeNode("Off", accepted={"Off", "On"})
+        state = {"loaded_set": None, "sets": {}}
 
         def configuration_mode_on():
             return configuration_mode.Value == "On"
 
-        return {
+        selector = FakeNode(0, minimum=0, maximum=31, writable=configuration_mode_on)
+        exposure = FakeNode(1000.0, minimum=10.0, maximum=20000.0)
+        path_selector = FakeNode(0, minimum=0, maximum=1, writable=configuration_mode_on)
+        set_next = FakeNode(1, minimum=0, maximum=31)
+        trigger_source = FakeNode("Off", accepted={"FrameStart"})
+        trigger_activation = FakeNode("LevelHigh", accepted={"LevelHigh"}, writable=False)
+
+        def loaded_path_one():
+            return (
+                configuration_mode_on()
+                and state["loaded_set"] is not None
+                and path_selector.Value == 1
+            )
+
+        set_next.writable = loaded_path_one
+        trigger_source.writable = lambda: loaded_path_one() and state["loaded_set"] == 0
+
+        def save_selected_set():
+            set_id = int(selector.Value)
+            previous = state["sets"].get(
+                set_id,
+                {
+                    "exposure": exposure.Value,
+                    "path": 0,
+                    "next": (set_id + 1) % 32,
+                    "trigger": "Off",
+                    "activation": "LevelHigh",
+                },
+            )
+            state["sets"][set_id] = {
+                "exposure": exposure.Value,
+                "path": path_selector.Value if state["loaded_set"] == set_id else previous["path"],
+                "next": set_next.Value if state["loaded_set"] == set_id else previous["next"],
+                "trigger": (
+                    trigger_source.Value if state["loaded_set"] == set_id else previous["trigger"]
+                ),
+                "activation": (
+                    trigger_activation.Value
+                    if state["loaded_set"] == set_id
+                    else previous["activation"]
+                ),
+            }
+
+        def load_selected_set():
+            set_id = int(selector.Value)
+            saved = state["sets"][set_id]
+            state["loaded_set"] = set_id
+            exposure.Value = saved["exposure"]
+            path_selector.Value = saved["path"]
+            set_next.Value = saved["next"]
+            trigger_source.Value = saved["trigger"]
+            trigger_activation.Value = saved["activation"]
+
+        nodes = {
             "ExposureAuto": FakeNode("Continuous", accepted={"Continuous", "Off"}),
             "GainAuto": FakeNode("Continuous", accepted={"Continuous", "Off"}),
-            "ExposureTime": FakeNode(1000.0, minimum=10.0, maximum=20000.0),
+            "ExposureTime": exposure,
             "SequencerMode": FakeNode("Off", accepted={"Off", "On"}),
             "SequencerConfigurationMode": configuration_mode,
-            "SequencerSetSelector": FakeNode(
-                0,
-                minimum=0,
-                maximum=31,
-                writable=configuration_mode_on,
-            ),
+            "SequencerSetSelector": selector,
             "SequencerSetSave": FakeNode(
                 writable=configuration_mode_on,
                 available=configuration_mode_on,
+                on_execute=save_selected_set,
             ),
             "SequencerSetLoad": FakeNode(
                 writable=configuration_mode_on,
                 available=configuration_mode_on,
+                on_execute=load_selected_set,
             ),
-            "SequencerPathSelector": FakeNode(
-                0,
-                minimum=0,
-                maximum=1,
-                writable=configuration_mode_on,
-            ),
-            "SequencerSetNext": FakeNode(
-                0,
-                minimum=0,
-                maximum=31,
-                writable=configuration_mode_on,
-            ),
-            "SequencerTriggerSource": FakeNode(
-                "Off",
-                accepted={"FrameStart"},
-                writable=configuration_mode_on,
-            ),
-            "SequencerTriggerActivation": FakeNode(
-                "RisingEdge",
-                accepted={"RisingEdge"},
-                writable=configuration_mode_on,
-            ),
-            "SequencerSetStart": FakeNode(
-                0,
-                writable=configuration_mode_on,
-            ),
+            "SequencerPathSelector": path_selector,
+            "SequencerSetNext": set_next,
+            "SequencerTriggerSource": trigger_source,
+            "SequencerTriggerActivation": trigger_activation,
+            "SequencerSetStart": FakeNode(0, writable=configuration_mode_on),
         }
+        nodes["_state"] = state
+        return nodes
 
     def test_modern_usb_sequence_uses_path_one_and_cycles(self):
         nodes = self.modern_nodes()
         result = sc.configure_exposure_sequencer(FakeCamera(nodes), [1000.0, 10000.0])
         self.assertEqual(result.set_exposure_us, {0: 1000.0, 1: 10000.0})
+        self.assertEqual(nodes["ExposureTime"].set_history, [1000.0, 10000.0])
+        self.assertEqual(nodes["SequencerSetSelector"].set_history, [0, 1, 0, 1, 0])
         self.assertEqual(nodes["SequencerPathSelector"].set_history, [1, 1])
         self.assertEqual(nodes["SequencerSetNext"].set_history, [1, 0])
-        self.assertEqual(nodes["SequencerTriggerSource"].set_history, ["FrameStart", "FrameStart"])
-        self.assertEqual(nodes["SequencerSetSave"].execute_count, 2)
-        self.assertEqual(nodes["SequencerSetLoad"].execute_count, 1)
+        self.assertEqual(nodes["SequencerTriggerSource"].set_history, ["FrameStart"])
+        self.assertEqual(nodes["SequencerTriggerActivation"].set_history, [])
+        self.assertEqual(nodes["SequencerSetSave"].execute_count, 4)
+        self.assertEqual(nodes["SequencerSetLoad"].execute_count, 3)
+        self.assertEqual(nodes["_state"]["sets"][0]["trigger"], "FrameStart")
+        self.assertEqual(nodes["_state"]["sets"][1]["next"], 0)
         self.assertEqual(nodes["SequencerConfigurationMode"].set_history, ["On", "Off"])
         self.assertEqual(nodes["SequencerConfigurationMode"].Value, "Off")
         self.assertEqual(nodes["SequencerMode"].Value, "On")
         self.assertEqual(nodes["ExposureAuto"].set_history, ["Off"])
         self.assertEqual(nodes["GainAuto"].set_history, ["Off"])
         self.assertEqual(result.node_names["backend"], "sequencer_path")
+
+    def test_disable_modern_sequencer_restores_both_modes(self):
+        nodes = {
+            "SequencerMode": FakeNode("On", accepted={"Off", "On"}),
+            "SequencerConfigurationMode": FakeNode("On", accepted={"Off", "On"}),
+        }
+
+        disabled = sc.disable_exposure_sequencer(FakeCamera(nodes))
+
+        self.assertEqual(disabled, ("SequencerMode", "SequencerConfigurationMode"))
+        self.assertEqual(nodes["SequencerMode"].Value, "Off")
+        self.assertEqual(nodes["SequencerConfigurationMode"].Value, "Off")
+
+    def test_disable_legacy_sequence_restores_both_modes(self):
+        nodes = {
+            "SequenceEnable": FakeNode(True, accepted={False, True}),
+            "SequenceConfigurationMode": FakeNode("On", accepted={"Off", "On"}),
+        }
+
+        disabled = sc.disable_exposure_sequencer(FakeCamera(nodes))
+
+        self.assertEqual(disabled, ("SequenceEnable", "SequenceConfigurationMode"))
+        self.assertIs(nodes["SequenceEnable"].Value, False)
+        self.assertEqual(nodes["SequenceConfigurationMode"].Value, "Off")
+
+    def test_modern_usb_sequence_keeps_arbitrary_exposure_count(self):
+        nodes = self.modern_nodes()
+        requested = [500.0, 1000.0, 5000.0, 10000.0]
+
+        result = sc.configure_exposure_sequencer(FakeCamera(nodes), requested)
+
+        self.assertEqual(result.set_exposure_us, dict(enumerate(requested)))
+        self.assertEqual(nodes["ExposureTime"].set_history, requested)
+        self.assertEqual(
+            nodes["SequencerSetSelector"].set_history,
+            [0, 1, 2, 3, 0, 1, 2, 3, 0],
+        )
+        self.assertEqual(nodes["SequencerTriggerSource"].set_history, ["FrameStart"])
+        self.assertEqual(nodes["SequencerSetNext"].set_history, [1, 2, 3, 0])
+        self.assertEqual(
+            [nodes["_state"]["sets"][i]["next"] for i in range(4)],
+            [1, 2, 3, 0],
+        )
+
+    def test_modern_usb_single_set_closes_cycle_to_itself(self):
+        nodes = self.modern_nodes()
+
+        result = sc.configure_exposure_sequencer(FakeCamera(nodes), [1000.0])
+
+        self.assertEqual(result.set_exposure_us, {0: 1000.0})
+        self.assertEqual(nodes["SequencerTriggerSource"].set_history, ["FrameStart"])
+        self.assertEqual(nodes["SequencerSetNext"].set_history, [0])
+        self.assertEqual(nodes["_state"]["sets"][0]["next"], 0)
+
+    def test_longer_sequence_rewrites_stale_transitions_from_shorter_run(self):
+        nodes = self.modern_nodes()
+        camera = FakeCamera(nodes)
+        sc.configure_exposure_sequencer(camera, [1000.0, 10000.0])
+        self.assertEqual(nodes["_state"]["sets"][1]["next"], 0)
+
+        requested = [500.0, 1000.0, 5000.0, 10000.0]
+        sc.configure_exposure_sequencer(camera, requested)
+
+        self.assertEqual(
+            [nodes["_state"]["sets"][i]["next"] for i in range(4)],
+            [1, 2, 3, 0],
+        )
 
     def test_modern_sequence_restores_modes_when_gated_node_is_missing(self):
         nodes = self.modern_nodes()
@@ -249,6 +357,16 @@ class SequencerTests(unittest.TestCase):
             sc.configure_exposure_sequencer(FakeCamera(nodes), [1000.0, 10000.0])
 
         self.assertEqual(nodes["SequencerConfigurationMode"].set_history, ["On", "Off"])
+        self.assertEqual(nodes["SequencerConfigurationMode"].Value, "Off")
+        self.assertEqual(nodes["SequencerMode"].Value, "Off")
+
+    def test_modern_sequence_restores_modes_when_path_node_is_missing(self):
+        nodes = self.modern_nodes()
+        del nodes["SequencerTriggerSource"]
+
+        with self.assertRaisesRegex(RuntimeError, "loaded set 0 / path 1"):
+            sc.configure_exposure_sequencer(FakeCamera(nodes), [1000.0, 10000.0])
+
         self.assertEqual(nodes["SequencerConfigurationMode"].Value, "Off")
         self.assertEqual(nodes["SequencerMode"].Value, "Off")
 

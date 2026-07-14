@@ -59,6 +59,14 @@ progress_interval_s: 10.0
 1 ms → 10 ms → 1 ms → 10 ms → … です。`exposure_time` と同時に指定した場合は
 `exposure_times_us` が優先され、その旨がログに表示されます。
 
+4条件も同じ設定で扱えます。
+
+```yaml
+exposure_times_us: [500.0, 1000.0, 5000.0, 10000.0]
+```
+
+Set IDはハードコードせず、任意長Nに対して`0 → 1 → ... → N-1 → 0`と循環します。
+
 単一要素（例: `[1000.0]`）も許容され、Sequencerを使用しますが、撮像結果は実質的に
 固定露光相当です。空配列、非数値、NaN/Inf、0以下、カメラ範囲外の値は撮像開始前に拒否されます。
 
@@ -69,6 +77,18 @@ progress_interval_s: 10.0
 `SequencerSetSave`、`SequencerSetLoad`、`SequencerPathSelector`などの設定用ノードは、
 `SequencerMode = Off`かつ`SequencerConfigurationMode = On`へ移行した後に利用可能になります。
 本プログラムはこの順序で設定し、失敗時も設定モードを解除してから終了します。
+各Setの露光条件を保存した後、各Setを`SequencerSetLoad`で明示的に読み込み、Path 1の
+`SequencerSetNext`を次のSetへ設定して`SequencerSetSave`します。Path 1の
+`SequencerTriggerSource = FrameStart`は、Baslerの仕様に従ってLoad済みSet 0へ一度だけ保存します。
+開始前と終了時にはSequencerモードをOffへ戻すため、異なる長さのシーケンスを連続実行できます。
+
+#### 実機検証
+
+2026-07-14にBasler `acA1440-220um`（Serial `25268934`、USB）で検証しました。
+
+- 2条件 `[1000, 10000]`、20フレーム: 10周期、captured/saved 20、dropped 0
+- 4条件 `[500, 1000, 5000, 10000]`、24フレーム: 6周期、captured/saved 24、dropped 0
+- 保存したExposure Time、Sequencer Set ID、Camera Timestampを再読込し、露光順、Set順、配列長、有限値、Timestamp単調増加を自動検証済み
 
 #### 各項目の意味
 - `output_dir`: 出力先ディレクトリ。
@@ -112,10 +132,10 @@ progress_interval_s: 10.0
 露光条件をフレーム番号の偶奇から推定しないため、取得失敗やドロップがあっても保存画像との対応を維持します。
 Chunk Exposure Timeが使えない場合だけ、Chunk Sequencer Setと登録済みSet対応から露光時間を復元します。
 
-想定機種 `acA1440-220um` はExposure Time/Timestamp Chunkを使用できますが、Sequencer Set Active
-Chunkは提供しません。この場合も実適用露光時間を正として対応を維持し、その値が登録済みSetの
-1つにだけ一致するときはSet IDを逆引きします。同じ露光値を複数Setへ登録した場合など、一意に
-決められないSet IDは `-1`（unknown）として保存し、フレーム番号からは推定しません。
+`acA1440-220um` ではChunk Exposure Timeを実適用値の正として対応を維持します。Chunk
+Sequencer Set Activeが利用できない場合は、実適用露光時間が登録済みSetの1つにだけ一致するときに
+Set IDを逆引きします。同じ露光値を複数Setへ登録した場合など、一意に決められないSet IDは
+`-1`（unknown）として保存し、フレーム番号からは推定しません。
 
 `.npy` と `metadata.json` は一時ファイルへ書いてから正式名へ置換されます。保存途中の `.tmp` は
 完成チャンクとして扱われません。チャンク書き込みキューの上限は2チャンクです。満杯時は警告して
